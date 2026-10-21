@@ -1,0 +1,13 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`determinism > matches the recorded golden hash (update deliberately when rules change) 1`] = `
+{
+  "actions": 149,
+  "hash": "f7033933",
+  "score": [
+    13,
+    8,
+  ],
+  "winner": 0,
+}
+`;
