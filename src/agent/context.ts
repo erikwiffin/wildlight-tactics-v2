@@ -4,6 +4,7 @@
 // reads the RNG state, enemy cooldowns, or anything the scripted AI computes.
 
 import {
+  abilityArea,
   abilityTargets,
   aliveOn,
   applyAction,
@@ -104,6 +105,7 @@ export function describeAbilities(state: GameState, u: Unit): string {
             const bits = [unitName(t)];
             if (r.damage) bits.push(`${r.damage} dmg`);
             if (r.heal) bits.push(`+${r.heal} heal`);
+            else if (t.team === u.team && ab.effects.some((e) => e.kind === 'heal')) bits.push('already at full HP: heals nothing');
             if (t.team !== u.team) bits.push(`${pct(r.chance)} hit`, `${r.arc}`);
             if (t.team !== u.team && r.damage >= t.hp) bits.push('WOULD KO');
             return bits.join(' ');
@@ -137,23 +139,65 @@ function turnMoves(state: GameState, u: Unit): Hex[] {
   return state.turn?.moved ? [] : [...reachable(state, u).values()].map((n) => n.hex);
 }
 
+export interface IncomingCast {
+  hexes: Hex[];
+  hostile: boolean;
+  /** Lands before `viewer` acts again. */
+  beforeNextTurn: boolean;
+  line: string;
+}
+
+/**
+ * Charged abilities waiting to go off, where they land and when: the same
+ * areas the board shows the player. Enemy damage areas are danger zones.
+ */
+export function incomingCasts(state: GameState, viewer: Unit): IncomingCast[] {
+  const queue = previewQueue(state, 24);
+  // The viewer's next turn: its first entry after the current one (if it is acting now).
+  const start = state.turn?.unit === viewer.id ? 1 : 0;
+  const nextTurn = queue.findIndex((e, i) => i >= start && e.kind === 'unit' && e.unit === viewer.id);
+  return state.pending.map((c) => {
+    const caster = state.units[c.caster];
+    const ab = getAbility(caster.defId, c.ability);
+    const hexes = abilityArea(state, ab, caster.pos, c.target);
+    const hostile = caster.team !== viewer.team && (ab.affects === 'enemies' || ab.affects === 'all');
+    const at = queue.findIndex((e) => e.kind === 'cast' && e.castId === c.id);
+    const unitTurnsFirst = queue.slice(0, at < 0 ? queue.length : at).filter((e) => e.kind === 'unit').length;
+    const beforeNextTurn = at >= 0 && (nextTurn < 0 || at < nextTurn);
+    const who = `${unitName(caster)}'s ${ab.name}`;
+    const when = beforeNextTurn ? 'BEFORE your next turn' : 'after your next turn';
+    const line = `${hostile ? 'DANGER: enemy' : caster.team === viewer.team ? 'Friendly' : 'Enemy'} ${who} lands on ${hexes.map(hx).join(' ')} after ${unitTurnsFirst} more unit turn${unitTurnsFirst === 1 ? '' : 's'} (${when}).`;
+    return { hexes, hostile, beforeNextTurn, line };
+  });
+}
+
+const dangerAt = (casts: IncomingCast[], h: Hex) => casts.find((c) => c.hostile && c.beforeNextTurn && c.hexes.some((x) => hexEq(x, h)));
+
 /** Hexes the unit can move to (as highlighted in blue), with notable features. */
 export function describeMoves(state: GameState, u: Unit): string {
   if (state.turn?.moved) return 'You already moved this turn.';
   const nodes = [...reachable(state, u).values()];
   if (!nodes.length) return 'No reachable hexes.';
-  const mapTiles = getMap(state.config.mapId).tiles;
+  const mapTiles = getMap(state.config.mapId, state.config.rulesVersion).tiles;
+  const casts = incomingCasts(state, u);
   return nodes
     .map((n) => {
       const t = mapTiles.get(`${n.hex.q},${n.hex.r}`)!;
       const spikes = state.hazards.some((z) => z.team !== u.team && hexEq(z.pos, n.hex)) ? ' [enemy spikes!]' : '';
-      return `${hx(n.hex)}h${t.h}${beaconLabel(state, n.hex)}${spikes}`;
+      const blast = dangerAt(casts, n.hex) ? ' [in incoming blast!]' : '';
+      return `${hx(n.hex)}h${t.h}${beaconLabel(state, n.hex)}${spikes}${blast}`;
     })
     .join(' ');
 }
 
 /** Which enemies could reach a hex next turn: what the player sees by counting moves. */
 export function threatsAt(state: GameState, u: Unit, h: Hex): string {
+  const blast = dangerAt(incomingCasts(state, u), h);
+  const warn = blast ? `${hx(h)} is inside an incoming enemy blast that lands before your next turn. ` : '';
+  return warn + threatsAtInner(state, u, h);
+}
+
+function threatsAtInner(state: GameState, u: Unit, h: Hex): string {
   const foes = aliveOn(state, u.team === 0 ? 1 : 0).filter((e) => {
     const d = defOf(e);
     const reach = d.stats.move + Math.max(...d.abilities.map((a) => a.maxRange));
@@ -184,7 +228,7 @@ const SQRT3 = Math.sqrt(3);
  * Players say "hold the center Beacon"; these names let the agent match that.
  */
 export function beaconNames(state: GameState, team: 0 | 1): string[] {
-  const map = getMap(state.config.mapId).def;
+  const map = getMap(state.config.mapId, state.config.rulesVersion).def;
   const near = (h: Hex, spawns: Hex[]) => Math.min(...spawns.map((s) => hexDistance(h, s)));
   // Lean > 0: closer to our spawn. Only the single most one-sided Beacon per side is a "home".
   const lean = state.beacons.map((b) => near(b.pos, map.spawns[team === 0 ? 1 : 0]) - near(b.pos, map.spawns[team]));
@@ -216,7 +260,7 @@ export interface Orders {
 /** The per-turn briefing: the full board as the player sees it, plus this unit's orders and options. */
 export function turnBriefing(state: GameState, unitId: number, orders: Orders, recent: string[]): string {
   const u = state.units[unitId];
-  const map = getMap(state.config.mapId).def;
+  const map = getMap(state.config.mapId, state.config.rulesVersion).def;
   const my = u.team;
   const foe = my === 0 ? 1 : 0;
   const moves = turnMoves(state, u);
@@ -252,6 +296,7 @@ export function turnBriefing(state: GameState, unitId: number, orders: Orders, r
     `# Situation`,
     `Map: ${map.name} (${map.teamSize}v${map.teamSize}). Score: us ${state.score[my]}, enemy ${state.score[foe]}; first to ${scoreToWin(state)}. Each Pulse scores 1 per Beacon held.`,
     beaconSummary(state, my),
+    ...incomingCasts(state, u).map((c) => c.line),
     `Beacons:\n${beacons}`,
     pressure,
     `Turn order: ${queueLine(state, u)}.`,

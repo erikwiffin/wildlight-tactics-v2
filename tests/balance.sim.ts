@@ -3,6 +3,7 @@
 import { writeFileSync } from 'node:fs';
 import { it } from 'vitest';
 import { aiTeam, STRATEGIES } from '../src/core/ai';
+import { createMatch } from '../src/core/engine';
 import { MAP_LIST } from '../src/core/map';
 import type { StrategyId } from '../src/core/types';
 import { selfPlay } from './helpers';
@@ -12,21 +13,30 @@ const PART = process.env.SIM_PART;
 const run = (p: string) => !PART || PART === p;
 
 it('AI-vs-AI batch', () => {
+  // Diagnostic: SIM_SWAP=1 swaps which side of each map Blue starts on.
+  if (process.env.SIM_SWAP) {
+    for (const m of MAP_LIST) {
+      m.spawns = [m.spawns[1], m.spawns[0]];
+      m.spawnFacing = [m.spawnFacing[1], m.spawnFacing[0]];
+    }
+  }
   const out: string[] = [];
   // 1. Pacing per map, balanced mirror.
   if (run('maps')) out.push('== Maps (balanced vs balanced) ==');
-  for (const map of run('maps') ? MAP_LIST : []) {
-    let pulses = 0, turns = 0, byScore = 0;
+  for (const map of run('maps') ? MAP_LIST.filter((m) => !process.env.SIM_MAP || m.id === process.env.SIM_MAP) : []) {
+    let pulses = 0, turns = 0, byScore = 0, firstWon = 0;
     const wins = [0, 0, 0];
     for (let i = 0; i < N; i++) {
       const team = aiTeam('m' + i, 'balanced', map.teamSize);
-      const { state, replay } = selfPlay(`${map.id}-${i}`, [team, team], { mapId: map.id });
+      const { state, replay } = selfPlay(`${process.env.SIM_SEED ?? ""}${map.id}-${i}`, [team, team], { mapId: map.id });
+      const first = createMatch(replay.config).units[createMatch(replay.config).turn!.unit].team;
+      if (state.winner === first) firstWon++;
       pulses += state.pulses;
       turns += replay.actions.filter((a) => a.type === 'end').length;
       wins[state.winner === 'draw' ? 2 : (state.winner as number)]++;
       if (state.units.some((u) => u.alive && u.team === 0) && state.units.some((u) => u.alive && u.team === 1)) byScore++;
     }
-    out.push(`${map.name.padEnd(16)} avg pulses ${(pulses / N).toFixed(1)}, avg turns ${(turns / N).toFixed(0)}, on score ${byScore}/${N}, wins t0/t1/draw ${wins.join('/')}`);
+    out.push(`${map.name.padEnd(16)} avg pulses ${(pulses / N).toFixed(1)}, avg turns ${(turns / N).toFixed(0)}, on score ${byScore}/${N}, wins t0/t1/draw ${wins.join('/')}, first mover won ${firstWon}/${N}`);
   }
   // 2. Strategy matrix on the standard arena; sides alternate. "drafts" lets each
   // strategy bring its own squad; "behavior" gives both sides the same squad.

@@ -164,6 +164,8 @@ export interface GameState {
   hazards: Hazard[];
   turn: TurnState | null;
   winner: TeamId | 'draw' | null;
+  /** Rules v3+: the team that wins the next speed tie between teams (alternates). */
+  tieTeam?: TeamId;
   /** Number of actions applied so far (handy for UI and debugging). */
   actionCount: number;
 }

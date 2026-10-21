@@ -68,6 +68,7 @@ LIVE=1 npx vitest run    # plays a few real agent turns against the API -> live-
 
   ```sh
   LOG=path/to/log.json npm run inspect      # -> inspect-report.txt
+  TOOL=1 npx vitest run tests/maps.tool.ts  # map drawings + cover/sight-line stats -> map-report.txt
   ```
 
   This replays the match and prints, for each Claude turn, the exact briefing it was given,

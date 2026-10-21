@@ -4,7 +4,8 @@
 import * as THREE from 'three';
 import { DIRS, hexKey, type Dir, type Hex } from '../core/hex';
 import { getMap } from '../core/map';
-import { MONSTER_BY_ID } from '../core/monsters';
+import { abilityArea } from '../core/engine';
+import { getAbility, MONSTER_BY_ID } from '../core/monsters';
 import type { GameState, TeamId, Unit } from '../core/types';
 import { buildMonsterModel } from './models';
 
@@ -61,12 +62,15 @@ export class BoardView {
   private container: HTMLElement;
   private overlay: HTMLDivElement;
   private mapId: string;
+  private rulesVersion: number;
   private tileMeshes = new Map<string, THREE.Mesh>();
   private tileHeights = new Map<string, number>();
   private highlights = new Map<string, THREE.Mesh>();
   private beaconRings: THREE.Mesh[] = [];
   private beaconCrystals: THREE.Mesh[] = [];
   private hazardGroup = new THREE.Group();
+  /** Landing areas of charging abilities, so incoming blasts are visible. */
+  private pendingGroup = new THREE.Group();
   private units = new Map<number, UnitView>();
   private tweens: Tween[] = [];
   private yawIndex = 0;
@@ -81,6 +85,7 @@ export class BoardView {
   constructor(container: HTMLElement, state: GameState) {
     this.container = container;
     this.mapId = state.config.mapId;
+    this.rulesVersion = state.config.rulesVersion;
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
@@ -91,11 +96,12 @@ export class BoardView {
     this.overlay.className = 'board-overlay';
     container.appendChild(this.overlay);
 
-    const map = getMap(this.mapId).def;
+    const map = getMap(this.mapId, this.rulesVersion).def;
     this.boardRadius = Math.max(...map.tiles.map((t) => hexToWorld(t).length())) + 1.1;
     this.buildLights();
     this.buildBoard();
     this.scene.add(this.hazardGroup);
+    this.scene.add(this.pendingGroup);
     for (const u of state.units) this.addUnit(u);
     this.sync(state);
 
@@ -131,7 +137,7 @@ export class BoardView {
   }
 
   private buildBoard(): void {
-    const map = getMap(this.mapId).def;
+    const map = getMap(this.mapId, this.rulesVersion).def;
     const topColors = [0x4c6b4a, 0x5f7f52, 0x7a8d5c, 0x9a9a6e];
     const sideMat = new THREE.MeshStandardMaterial({ color: 0x3a3226, roughness: 0.95 });
     const roughTop = new THREE.MeshStandardMaterial({ color: 0x7a5a3a, roughness: 1 });
@@ -285,6 +291,7 @@ export class BoardView {
     }
     state.beacons.forEach((b, i) => this.setBeaconOwner(i, b.owner));
     this.syncHazards(state);
+    this.syncPending(state);
     this.activeUnit = state.turn?.unit ?? null;
   }
 
@@ -294,6 +301,25 @@ export class BoardView {
       const m = mesh.material as THREE.MeshStandardMaterial;
       m.color.setHex(color);
       m.emissive.setHex(color);
+    }
+  }
+
+  syncPending(state: GameState): void {
+    this.pendingGroup.clear();
+    const ring = new THREE.RingGeometry(0.62, 0.86, 6);
+    ring.rotateX(-Math.PI / 2);
+    ring.rotateY(Math.PI / 6);
+    for (const c of state.pending) {
+      const caster = state.units[c.caster];
+      const ab = getAbility(caster.defId, c.ability);
+      const mat = new THREE.MeshBasicMaterial({ color: TEAM_COLORS[caster.team], transparent: true, opacity: 0.8, depthWrite: false });
+      for (const h of abilityArea(state, ab, caster.pos, c.target)) {
+        const m = new THREE.Mesh(ring, mat);
+        const p = this.unitWorld(h);
+        m.position.set(p.x, p.y + 0.04, p.z);
+        m.renderOrder = 3;
+        this.pendingGroup.add(m);
+      }
     }
   }
 
@@ -711,6 +737,8 @@ export class BoardView {
       c.position.y = c.userData.baseY ?? (c.userData.baseY = c.position.y);
       c.position.y = c.userData.baseY + Math.sin(t * 2 + i) * 0.12;
     });
+    const pulse = 0.45 + 0.4 * Math.abs(Math.sin(t * 3));
+    for (const m of this.pendingGroup.children) ((m as THREE.Mesh).material as THREE.MeshBasicMaterial).opacity = pulse;
     for (const v of this.units.values()) {
       if (!v.alive) continue;
       const active = v.id === this.activeUnit;

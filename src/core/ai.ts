@@ -19,6 +19,7 @@ import {
 } from './engine';
 import { DIRS, directionTo, hexAdd, hexDistance, type Dir, type Hex } from './hex';
 import { getAbility } from './monsters';
+import { canFlip, flipAction, flipState } from './perspective';
 import type { Action, GameState, Role, StrategyId, Unit } from './types';
 
 export interface StrategyInfo {
@@ -71,6 +72,14 @@ const RISK: Record<Role, number> = {
 };
 
 export function nextAiAction(state: GameState, strategy: StrategyId = 'balanced'): Action {
+  // Always plan as Blue: Orange's turn is planned on the mirrored board and the
+  // action mirrored back, so scan order and tie-breaks favor neither side.
+  const u = activeUnit(state);
+  if (u && u.team === 1 && canFlip(state)) return flipAction(planAsIs(flipState(state), strategy));
+  return planAsIs(state, strategy);
+}
+
+function planAsIs(state: GameState, strategy: StrategyId): Action {
   const w = WEIGHTS[strategy];
   const u = activeUnit(state);
   if (!u || !state.turn) throw new Error('No active unit');

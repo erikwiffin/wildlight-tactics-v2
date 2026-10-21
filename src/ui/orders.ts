@@ -58,6 +58,7 @@ export class OrdersScreen extends MatchScreen {
   private feedLog: { kind: FeedKind; text: string }[] = [];
   private savedId: string | null = null;
   private noted = false;
+  private waitingOn: number | null = null;
   private agentTurns: AgentTurnLog[] = [];
   private tab: 'orders' | 'feed' = 'orders';
   private ui!: {
@@ -91,7 +92,7 @@ export class OrdersScreen extends MatchScreen {
 
   /** Hooks for automated UI tests (enabled with ?debug). */
   debug() {
-    return { state: () => this.state, feed: () => this.feedLog, paused: () => this.paused, setOrder: (id: number, t: string) => this.setOrder(id, t) };
+    return { state: () => this.state, feed: () => this.feedLog, paused: () => this.paused, orders: () => ({ ...this.orders }), setOrder: (id: number, t: string) => this.setOrder(id, t) };
   }
 
   // -------------------------------------------------------------------------
@@ -117,6 +118,14 @@ export class OrdersScreen extends MatchScreen {
         await this.telegraph(a);
         this.logEvents(await this.commit(a), 'enemy');
         if (a.type === 'end') this.save();
+        continue;
+      }
+      if (this.drafts.has(u.id)) {
+        // The player is still editing this unit's order: wait for it.
+        this.waitingOn = u.id;
+        this.renderStatus();
+        await new Promise<void>((r) => (this.wakeFn = r));
+        this.waitingOn = null;
         continue;
       }
       const order = this.orders[u.id]?.trim();
@@ -227,6 +236,27 @@ export class OrdersScreen extends MatchScreen {
     this.resume();
   }
 
+  /** Order text being edited and not yet applied, by unit. */
+  private drafts = new Map<number, { text: string; timer: ReturnType<typeof setTimeout> }>();
+
+  private draftOrder(id: number, text: string): void {
+    const d = this.drafts.get(id);
+    if (d) clearTimeout(d.timer);
+    this.drafts.set(id, { text, timer: setTimeout(() => this.commitOrder(id), 2500) });
+    this.ui.rows.get(id)?.classList.add('editing');
+    this.renderStatus();
+  }
+
+  private commitOrder(id: number): void {
+    const d = this.drafts.get(id);
+    if (!d) return;
+    clearTimeout(d.timer);
+    this.drafts.delete(id);
+    this.ui.rows.get(id)?.classList.remove('editing');
+    this.setOrder(id, d.text);
+    this.wake(); // a turn may be waiting on this order
+  }
+
   private setOrder(id: number, text: string): void {
     this.orders[id] = text;
     remembered[this.state.units[id].defId] = text;
@@ -276,10 +306,19 @@ export class OrdersScreen extends MatchScreen {
       ta.rows = 2;
       ta.placeholder = `e.g. ${exampleOrder(defOf(u).role, beaconNames(this.state, PLAYER))}`;
       ta.value = this.orders[u.id] ?? '';
-      ta.oninput = () => this.setOrder(u.id, ta.value);
+      // Edits apply when you finish (leave the box, press Enter, or pause
+      // typing), never mid-word: a turn must not run on "Hide behind our r".
+      ta.oninput = () => this.draftOrder(u.id, ta.value);
+      ta.onblur = () => this.commitOrder(u.id);
+      ta.onkeydown = (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          ta.blur();
+        }
+      };
       const field = el('div', 'order-field');
       field.append(ta);
-      const mic = micButton(ta, () => this.setOrder(u.id, ta.value), (m) => this.toast(m));
+      const mic = micButton(ta, () => this.draftOrder(u.id, ta.value), (m) => this.toast(m));
       if (mic) field.append(mic);
       row.append(label, field);
       ordersPane.append(row);
@@ -291,7 +330,7 @@ export class OrdersScreen extends MatchScreen {
         if (!this.orders[u.id]?.trim()) this.setOrder(u.id, exampleOrder(defOf(u).role, beaconNames(this.state, PLAYER)));
       }
     };
-    ordersPane.append(fill);
+    ordersPane.append(el('p', 'hint', 'Edits apply when you leave the box, press Enter, or stop typing for a moment.'), fill);
     const feedPane = el('div', 'feed-pane');
     feedPane.setAttribute('aria-live', 'polite');
     const head = el('div', 'panel-head');
@@ -306,6 +345,7 @@ export class OrdersScreen extends MatchScreen {
     let text: string;
     if (this.state.winner !== null) text = 'Match over';
     else if (this.thinking !== null) text = `${unitName(this.state.units[this.thinking])} is thinking…`;
+    else if (this.waitingOn !== null) text = `Waiting for you to finish ${unitName(this.state.units[this.waitingOn])}'s order…`;
     else if (this.paused) text = this.started ? 'Paused' : 'Ready';
     else text = u && u.team !== PLAYER ? 'Enemy turn…' : '…';
     this.ui.status.textContent = text;

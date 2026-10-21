@@ -34,8 +34,8 @@ import type {
   Unit,
 } from './types';
 
-// v2: line of sight, per-map team size / score target, void terrain.
-export const RULES_VERSION = 2;
+import { RULES_VERSION } from './version';
+export { RULES_VERSION };
 export const PULSE_SPEED = 7;
 export const MAX_PULSES = 40;
 export const CT_FULL = 100;
@@ -47,7 +47,7 @@ export const DAMAGE_SCALE = 150;
 // Setup
 
 export function createMatch(config: MatchConfig): GameState {
-  const map = getMap(config.mapId).def;
+  const map = getMap(config.mapId, config.rulesVersion).def;
   for (const team of config.teams) {
     if (team.length !== map.teamSize) throw new Error(`${map.name} needs ${map.teamSize} monsters per team`);
   }
@@ -93,6 +93,8 @@ export function createMatch(config: MatchConfig): GameState {
     winner: null,
     actionCount: 0,
   };
+  // v3+: a seeded coin flip decides which team wins the first speed tie.
+  if (config.rulesVersion >= 3) state.tieTeam = rollBp(state.rng) < 5000 ? 0 : 1;
   advance(state, []);
   return state;
 }
@@ -102,10 +104,14 @@ export function createMatch(config: MatchConfig): GameState {
 
 export const defOf = (u: Unit): MonsterDef => MONSTER_BY_ID[u.defId];
 
-export const scoreToWin = (state: GameState): number => getMap(state.config.mapId).def.scoreToWin;
+export const scoreToWin = (state: GameState): number => getMap(state.config.mapId, state.config.rulesVersion).def.scoreToWin;
+
+/** Rules v3+ resolve direction and landing ties symmetrically (see hex.ts directionTo). */
+const symmetric = (state: GameState) => state.config.rulesVersion >= 3;
+const dirTo = (state: GameState, a: Hex, b: Hex) => directionTo(a, b, symmetric(state));
 
 export function tileAt(state: GameState, h: Hex): Tile | undefined {
-  return getMap(state.config.mapId).tiles.get(hexKey(h));
+  return getMap(state.config.mapId, state.config.rulesVersion).tiles.get(hexKey(h));
 }
 
 export function unitAt(state: GameState, h: Hex): Unit | undefined {
@@ -231,10 +237,15 @@ function rangeBonus(state: GameState, from: Hex, to: Hex, ab: AbilityDef): numbe
 
 /** Where a leaping attacker lands next to `target`, or null if boxed in. */
 export function leapLanding(state: GameState, caster: Unit, target: Hex): Hex | null {
+  // Scan the target's neighbors starting from the side facing the caster
+  // (v3+), so equally close landing hexes resolve the same way for both teams.
+  // v2 scanned from direction 0, which favored one side of the map.
+  const start = symmetric(state) ? dirTo(state, target, caster.pos) : 0;
   let best: Hex | null = null;
   let bestD = Infinity;
-  for (let d = 0; d < 6; d++) {
-    const h = neighbor(target, d as Dir);
+  for (let k = 0; k < 6; k++) {
+    const d = ((start + k) % 6) as Dir;
+    const h = neighbor(target, d);
     if (!walkable(tileAt(state, h))) continue;
     const occ = unitAt(state, h);
     if (occ && occ.id !== caster.id) continue;
@@ -297,7 +308,7 @@ export function abilityArea(state: GameState, ab: AbilityDef, from: Hex, target:
   else if (area.shape === 'radius') hexes = hexesInRadius(target, area.radius);
   else {
     // Rays pierce units but stop at rock and at walls 2+ above the caster.
-    const d = directionTo(from, target);
+    const d = dirTo(state, from, target);
     const h0 = tileAt(state, from)?.h ?? 0;
     hexes = [];
     for (let i = 1; i <= area.length; i++) {
@@ -327,9 +338,9 @@ function affectedUnits(state: GameState, caster: Unit, ab: AbilityDef, hexes: He
 // ---------------------------------------------------------------------------
 // Combat math (shared by resolution, UI preview and AI)
 
-export function attackArc(attackerPos: Hex, target: Unit): Arc {
+export function attackArc(attackerPos: Hex, target: Unit, symmetricTies = true): Arc {
   if (hexEq(attackerPos, target.pos)) return 'front';
-  const d = directionTo(target.pos, attackerPos);
+  const d = directionTo(target.pos, attackerPos, symmetricTies);
   const off = (d - target.facing + 6) % 6;
   if (off === 3) return 'rear';
   if (off === 2 || off === 4) return 'flank';
@@ -359,7 +370,7 @@ export function computeDamage(
   }
   const raw = Math.floor((stat * eff.power * DAMAGE_SCALE) / 10000);
   let dmg = Math.floor((raw * 100) / (100 + 5 * defStat));
-  const arc = attackArc(attackerPos, target);
+  const arc = attackArc(attackerPos, target, symmetric(state));
   let mult = arc === 'rear' ? 150 + (eff.rearBonus ?? 0) : arc === 'flank' ? 125 : 100;
   const dh = (tileAt(state, attackerPos)?.h ?? 0) - (tileAt(state, target.pos)?.h ?? 0);
   mult += 10 * Math.max(-3, Math.min(3, dh));
@@ -391,13 +402,14 @@ export function previewAbility(state: GameState, u: Unit, abilityId: string, tar
   if (ab.effects.some((e) => e.kind === 'leap')) from = leapLanding(state, u, target) ?? u.pos;
   const hexes = abilityArea(state, ab, u.pos, target);
   return affectedUnits(state, u, ab, hexes).map((t) => {
-    const arc = attackArc(from, t);
+    const arc = attackArc(from, t, symmetric(state));
     let damage = 0;
     let heal = 0;
     for (const e of ab.effects) {
       if (e.kind === 'damage') damage += computeDamage(state, u, from, t, e).amount;
       if (e.kind === 'heal') heal += computeHeal(u, e.power);
     }
+    heal = Math.min(heal, t.maxHp - t.hp); // what would actually land, not the raw amount
     return { unit: t.id, chance: t.team !== u.team ? hitChance(ab, arc) : 10000, arc, damage, heal, effects: ab.effects };
   });
 }
@@ -413,7 +425,8 @@ export type QueueEntry =
 export function previewQueue(state: GameState, count: number): QueueEntry[] {
   const out: QueueEntry[] = [];
   if (state.winner !== null) return out;
-  const units = state.units.filter((u) => u.alive).map((u) => ({ id: u.id, ct: u.ct, spd: effectiveSpeed(u) }));
+  const units = state.units.filter((u) => u.alive).map((u) => ({ id: u.id, team: u.team, ct: u.ct, spd: effectiveSpeed(u) }));
+  const tie = state.tieTeam === undefined ? undefined : { team: state.tieTeam };
   const casts = state.pending.map((p) => ({ ...p }));
   let pulseCt = state.pulseCt;
   if (state.turn) {
@@ -433,7 +446,7 @@ export function previewQueue(state: GameState, count: number): QueueEntry[] {
       pulseCt -= CT_FULL;
       continue;
     }
-    const ready = pickReady(units);
+    const ready = pickReady(units, tie);
     if (ready) {
       out.push({ kind: 'unit', unit: ready.id });
       ready.ct = Math.min(ready.ct - CT_FULL, 60);
@@ -446,13 +459,21 @@ export function previewQueue(state: GameState, count: number): QueueEntry[] {
   return out;
 }
 
-function pickReady<T extends { id: number; ct: number }>(units: T[]): T | undefined {
-  let best: T | undefined;
-  for (const u of units) {
-    if (u.ct < CT_FULL) continue;
-    if (!best || u.ct > best.ct || (u.ct === best.ct && u.id < best.id)) best = u;
-  }
-  return best;
+/**
+ * The unit that acts next: highest CT, then lowest id. With `tie` (rules v3+),
+ * when units of BOTH teams share the top CT, `tie.team` wins and the next such
+ * tie goes to the other team. (v2 always gave ties to the lowest id, which is
+ * a Blue unit, and on some maps that decided races for Beacons.)
+ */
+function pickReady<T extends { id: number; ct: number; team: TeamId }>(units: T[], tie?: { team: TeamId }): T | undefined {
+  let top = -Infinity;
+  for (const u of units) if (u.ct >= CT_FULL && u.ct > top) top = u.ct;
+  if (top === -Infinity) return undefined;
+  const tied = units.filter((u) => u.ct === top).sort((a, b) => a.id - b.id);
+  if (!tie || tied.every((u) => u.team === tied[0].team)) return tied[0];
+  const pick = tied.find((u) => u.team === tie.team)!;
+  tie.team = tie.team === 0 ? 1 : 0;
+  return pick;
 }
 
 // ---------------------------------------------------------------------------
@@ -478,7 +499,9 @@ export function applyAction(state: GameState, action: Action): GameEvent[] {
       if (!reachable(state, u).has(hexKey(action.to))) fail('Destination not reachable');
       const path = pathTo(reachGraph(state, u), u.pos, action.to);
       const last = path.length >= 2 ? path[path.length - 2] : u.pos;
-      u.facing = directionTo(last, action.to);
+      // v3+: face from start toward destination; v2 used the last step, which
+      // depends on which of several equally short routes was taken.
+      u.facing = symmetric(state) ? dirTo(state, u.pos, action.to) : dirTo(state, last, action.to);
       u.pos = { ...action.to };
       turn.moved = true;
       events.push({ type: 'move', unit: u.id, path });
@@ -496,7 +519,7 @@ export function applyAction(state: GameState, action: Action): GameEvent[] {
       if (!legal.some((h) => hexEq(h, action.target))) fail('Illegal target');
       u.cooldowns[ab.id] = ab.cooldown > 0 ? ab.cooldown + 1 : 0;
       turn.acted = true;
-      if (!hexEq(action.target, u.pos)) u.facing = directionTo(u.pos, action.target);
+      if (!hexEq(action.target, u.pos)) u.facing = dirTo(state, u.pos, action.target);
       if (isOffensive(ab)) removeStatus(u, 'camo');
       events.push({ type: 'abilityUsed', unit: u.id, ability: ab.id, target: action.target });
       if (ab.chargeSpeed) {
@@ -574,7 +597,9 @@ function advance(state: GameState, events: GameEvent[]): void {
       pulse(state, events);
       continue;
     }
-    const ready = pickReady(state.units.filter((u) => u.alive));
+    const tie = state.tieTeam === undefined ? undefined : { team: state.tieTeam };
+    const ready = pickReady(state.units.filter((u) => u.alive), tie);
+    if (tie) state.tieTeam = tie.team;
     if (ready) {
       if (startTurn(state, ready, events)) return;
       continue;
@@ -699,6 +724,23 @@ function displace(state: GameState, u: Unit, dir: Dir, dist: number, events: Gam
   if (path.length) events.push({ type: 'displace', unit: u.id, path });
 }
 
+/**
+ * The order units in an area take their hit rolls. v3+: nearest the aimed hex
+ * first, then clockwise starting from the caster's side, so a mirrored
+ * situation hands the same rolls to the mirrored units. (v2: board-scan order.)
+ */
+function rollOrder(state: GameState, caster: Unit, target: Hex, units: Unit[]): Unit[] {
+  if (!symmetric(state) || units.length < 2) return units;
+  // Self-centered areas (Quake Stomp) have no direction to the caster: use its facing.
+  const start = hexEq(target, caster.pos) ? caster.facing : dirTo(state, target, caster.pos);
+  const key = (u: Unit) => {
+    const d = hexDistance(u.pos, target);
+    const rel = d === 0 ? 0 : (dirTo(state, target, u.pos) - start + 6) % 6;
+    return d * 6 + rel;
+  };
+  return [...units].sort((a, b) => key(a) - key(b));
+}
+
 function resolveAbility(state: GameState, caster: Unit, ab: AbilityDef, target: Hex, events: GameEvent[]): void {
   if (!caster.alive) return;
   if (ab.effects.some((e) => e.kind === 'leap')) {
@@ -707,7 +749,7 @@ function resolveAbility(state: GameState, caster: Unit, ab: AbilityDef, target: 
       caster.pos = land;
       events.push({ type: 'displace', unit: caster.id, path: [land] });
     }
-    caster.facing = directionTo(caster.pos, target);
+    caster.facing = dirTo(state, caster.pos, target);
   }
   const hexes = abilityArea(state, ab, caster.pos, target);
   for (const e of ab.effects) {
@@ -719,10 +761,10 @@ function resolveAbility(state: GameState, caster: Unit, ab: AbilityDef, target: 
     }
     events.push({ type: 'hazardPlaced', tiles, team: caster.team });
   }
-  for (const t of affectedUnits(state, caster, ab, hexes)) {
+  for (const t of rollOrder(state, caster, target, affectedUnits(state, caster, ab, hexes))) {
     if (!t.alive || !caster.alive) continue;
     const hostile = t.team !== caster.team;
-    const arc = attackArc(caster.pos, t);
+    const arc = attackArc(caster.pos, t, symmetric(state));
     if (hostile && ab.acc !== undefined) {
       if (rollBp(state.rng) >= hitChance(ab, arc)) {
         events.push({ type: 'miss', unit: t.id, source: caster.id });
@@ -750,12 +792,12 @@ function resolveAbility(state: GameState, caster: Unit, ab: AbilityDef, target: 
           break;
         }
         case 'push':
-          displace(state, t, directionTo(caster.pos, t.pos), e.dist, events);
+          displace(state, t, dirTo(state, caster.pos, t.pos), e.dist, events);
           break;
         case 'pull': {
           // Pull stops one hex short of the caster (the caster's hex is occupied).
           const steps = Math.min(e.dist, hexDistance(caster.pos, t.pos) - 1);
-          if (steps > 0) displace(state, t, directionTo(t.pos, caster.pos), steps, events);
+          if (steps > 0) displace(state, t, dirTo(state, t.pos, caster.pos), steps, events);
           break;
         }
         case 'status':

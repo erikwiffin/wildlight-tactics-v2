@@ -314,6 +314,8 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 .order-row { display: flex; flex-direction: column; gap: 4px; }
 .order-row.ko { opacity: 0.4; }
 .order-row.active .order-input { border-color: var(--nanite); }
+.order-row.editing .order-input { border-color: var(--gold); }
+.order-row.editing .order-label::after { content: 'editing…'; color: var(--gold); font-weight: 600; font-size: 11px; }
 .order-label { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 13px; }
 .order-label small { color: var(--muted); font-weight: 600; text-transform: capitalize; }
 .order-label .mono { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; font-size: 10px; font-weight: 900; border: 2px solid var(--t0); color: var(--t0); }

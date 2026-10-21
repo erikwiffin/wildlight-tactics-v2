@@ -31,11 +31,34 @@ and holding them feeds your swarm.
 ### Maps
 
 All maps are point-symmetric, so (q, r) mirrors to (−q, −r). Spawns, facings and Beacons
-mirror too, so neither side is favored.
+mirror too.
+
+**Rules v3 terrain:**
+- Every map has 17–22% rock and some high ground.
+- 34–46% of tile pairs 2–4 hexes apart have no line of sight, against 8–18% before.
+- Every Beacon has 1–2 of its six sides walled, so holding one means facing the open side,
+  and flanking means going around.
+- `TOOL=1 npx vitest run tests/maps.tool.ts` draws each map and reports these numbers.
+
+**Fairness is proven, not assumed.** `tests/symmetry.test.ts` plays whole AI-vs-AI games
+next to their mirror images and requires them to stay identical move for move. That test
+found, and v3 fixes, every tie-break that used to favor one side:
+- **Speed ties:** they always went to Blue. Now they alternate, starting with a team chosen
+  by the seed.
+- **Direction ties:** ties at the 5/0 boundary.
+- **Leap landing:** the order landing hexes are scanned in.
+- **Facing after a move:** it depended on which of several equally short routes was taken.
+  Now it's start → destination.
+- **Hit rolls in an area:** the order units took them.
+- **AI:** Orange now plans on the mirrored board, as if it were Blue, and the action is
+  mirrored back.
+
+Rules v2 replays keep the v2 maps and tie-breaks (`getMap(id, version)`), so old saved
+matches still replay exactly.
 
 | Map | Shape | Team size | Beacons | Score target | Character |
 |---|---|---|---|---|---|
-| Glass Hollow | hexagon, radius 4 (61 hexes) | 3v3 | 2 | 10 | A duel map. Two flank Beacons and a rock spine that breaks sight lines. |
+| Glass Hollow | hexagon, radius 4 (61 hexes) | 3v3 | 2 | 10 | A duel map. Flank Beacons in rock pockets, lane pillars, a high perch on each side. |
 | Shattered Basin | hexagon, radius 6 (127 hexes) | 4v4 | 3 | 15 | The standard map: home Beacons and a raised center |
 | Caldera | ring, radius 7, lava core | 4v4 | 4 | 15 | You can shoot across the lava, but you have to walk around it |
 | Fault Lines | 13-wide rectangle (188 hexes) | 5v5 | 5 | 20 | Three lanes split by rock ridges |

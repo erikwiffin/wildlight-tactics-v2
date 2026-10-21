@@ -116,6 +116,7 @@ Rules
 - Height: +10% damage per level above the target. Ranged attacks gain +1 range from 2+ levels up.
 - Abilities marked "needs line of sight" are blocked by rock, high walls and any unit in the way, allies included.
 - Enemy spike fields hurt and stop you when you enter them.
+- Charged abilities land later on a fixed area. Never end your turn inside an enemy blast that lands before your next turn (marked "in incoming blast!"); step out of it.
 - Hit chances are real odds; you only learn the result after acting.
 
 Following orders

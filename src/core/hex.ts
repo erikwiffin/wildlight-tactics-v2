@@ -46,22 +46,31 @@ export function hexesInRadius(center: Hex, radius: number): Hex[] {
  * Closest of the six directions pointing from `from` toward `to`.
  * The cube-coordinate plane is a scaled copy of the hex plane, so the
  * integer dot product with each direction vector ranks them by angle.
- * Exact ties (target sits on a 30° boundary) resolve to the lower index.
+ *
+ * Exact ties (the target sits on a 30° boundary between d and d+1):
+ * - symmetric (rules v3+): pick d, going around the circle, so a tie and its
+ *   mirror image (rotated 180°) always resolve as mirror images.
+ * - legacy (rules v2): pick the lower index, which breaks that symmetry at the
+ *   5/0 boundary.
  */
-export function directionTo(from: Hex, to: Hex): Dir {
+export function directionTo(from: Hex, to: Hex, symmetric = true): Dir {
   const dq = to.q - from.q;
   const dr = to.r - from.r;
   const ds = -dq - dr;
   let best: Dir = 0;
   let bestDot = -Infinity;
+  const tied: Dir[] = [];
   for (let i = 0; i < 6; i++) {
     const d = DIRS[i];
     const dot = dq * d.q + dr * d.r + ds * (-d.q - d.r);
     if (dot > bestDot) {
       bestDot = dot;
       best = i as Dir;
-    }
+      tied.length = 0;
+      tied.push(i as Dir);
+    } else if (dot === bestDot) tied.push(i as Dir);
   }
+  if (symmetric && tied.length === 2 && tied[0] === 0 && tied[1] === 5) return 5;
   return best;
 }
 

@@ -96,7 +96,7 @@ export abstract class MatchScreen {
     if (!u) return this.view.frameAll();
     const def = defOf(u);
     const reach = def.stats.move + Math.min(4, Math.max(...def.abilities.map((a) => a.maxRange)));
-    const tiles = getMap(this.state.config.mapId).def.tiles.filter((t) => hexDistance(t, u.pos) <= reach);
+    const tiles = getMap(this.state.config.mapId, this.state.config.rulesVersion).def.tiles.filter((t) => hexDistance(t, u.pos) <= reach);
     this.view.frameHexes(tiles);
   }
 
