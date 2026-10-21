@@ -219,6 +219,22 @@ The briefing and tools are built only from what the screen shows (`src/agent/con
 Legality is checked with the same target query the tap UI uses, so nothing is resolved ahead
 of time. The agent never touches the RNG state, the scripted AI, or the enemy's plans.
 
+### Two ways to reach Claude
+Both backends share the briefing and the four tools (`turnTools` in `src/agent/agent.ts`).
+`resolveAgent()` picks one at startup.
+
+1. **Local dev/preview server:** the Anthropic SDK through `server/anthropic-proxy.ts`, which
+   holds the key. A manual loop stops the moment `end_turn` runs.
+2. **claude.ai artifact:**
+   - The artifact sandbox blocks network calls to `api.anthropic.com`, so a pasted key couldn't
+     work there.
+   - Instead the page uses the artifact's `sample` capability, which:
+     - asks for `claude-haiku-5-5` at low effort on the quick tier
+     - runs the same tools as page functions
+     - bills the viewer's own Claude account after a consent prompt
+   - The call is left to finish after `end_turn` (one short wrap-up round), so its result can
+     confirm Haiku answered. If the platform had to use another tier, the feed says so.
+
 ### Failures
 API errors, timeouts, refusals, or a turn that never ends (6 calls max) **pause the match**. A
 panel explains what happened, with Retry and Skip turn. A unit without an order also pauses

@@ -1,4 +1,5 @@
 import './style.css';
+import { resolveAgent } from './agent/agent';
 import { aiTeam } from './core/ai';
 import { newConfig } from './core/engine';
 import { MAPS } from './core/map';
@@ -30,14 +31,15 @@ function library(): void {
   showLibrary(app, (r) => watch(r, 'Back to library', library), setup);
 }
 
-function start(r: SetupResult): void {
+async function start(r: SetupResult): Promise<void> {
   last = r;
   clear();
   const { prefs, seed } = r;
   const size = MAPS[prefs.mapId].teamSize;
   if (prefs.mode === 'play') {
     const config = newConfig(seed, [prefs.picks, aiTeam(seed, prefs.enemy, size, '1')], prefs.mapId, [null, prefs.enemy]);
-    const game = prefs.control === 'orders' ? new OrdersScreen(app, config, onPlayExit) : new PlayScreen(app, config, onPlayExit);
+    const agent = prefs.control === 'orders' ? await resolveAgent() : null;
+    const game = agent?.runner ? new OrdersScreen(app, config, onPlayExit, agent.runner) : new PlayScreen(app, config, onPlayExit);
     screen = game;
     if (debug) (window as unknown as { wl: unknown }).wl = game.debug();
   } else {
@@ -61,7 +63,7 @@ function watch(r: Replay, exitLabel: string, onExit: () => void): void {
 }
 
 function onPlayExit(e: PlayExit): void {
-  if (e.to === 'rematch' && last) start({ ...last, seed: randomSeed() });
+  if (e.to === 'rematch' && last) void start({ ...last, seed: randomSeed() });
   else if (e.to === 'watch') watch(e.replay, 'Back to setup', setup);
   else setup();
 }

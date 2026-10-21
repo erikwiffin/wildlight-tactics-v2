@@ -5,7 +5,7 @@ import { hexKey } from '../core/hex';
 import { MAP_LIST, MAPS } from '../core/map';
 import { MONSTER_BY_ID, MONSTERS } from '../core/monsters';
 import type { MapDef, StrategyId } from '../core/types';
-import { agentAvailable } from '../agent/agent';
+import { resolveAgent } from '../agent/agent';
 import { el, esc } from './dom';
 import { loadPrefs, savePrefs, type Prefs } from './store';
 
@@ -71,7 +71,7 @@ export function showSetup(host: HTMLElement, onStart: (r: SetupResult) => void, 
   const controlSection = section('How you play');
   const controlRow = el('div', 'chips');
   const controlHint = el('p', 'hint');
-  const agent = { ok: false, reason: 'Checking for the Claude agent…' };
+  const agent = { ok: false, reason: 'Checking for Claude…', via: '' };
   const controlBtns = (
     [
       ['direct', 'Tap commands', 'You move and act with every unit yourself.'],
@@ -88,9 +88,10 @@ export function showSetup(host: HTMLElement, onStart: (r: SetupResult) => void, 
     return { b, id, desc };
   });
   controlSection.append(controlRow, controlHint);
-  void agentAvailable().then((r) => {
-    agent.ok = r.ok;
-    agent.reason = r.reason ?? '';
+  void resolveAgent().then((r) => {
+    agent.ok = !!r.runner;
+    agent.reason = r.runner ? '' : r.reason;
+    agent.via = r.runner ? r.via : '';
     refresh();
   });
 
@@ -195,7 +196,10 @@ export function showSetup(host: HTMLElement, onStart: (r: SetupResult) => void, 
     const ordersBlocked = prefs.control === 'orders' && !agent.ok;
     controlHint.textContent = ordersBlocked
       ? `Orders mode is unavailable: ${agent.reason}`
-      : controlBtns.find((c) => c.id === prefs.control)!.desc + (agent.ok ? '' : ` Orders mode needs the local dev server with an API key (${agent.reason}).`);
+      : controlBtns.find((c) => c.id === prefs.control)!.desc +
+        (agent.ok
+          ? prefs.control === 'orders' ? ` Claude runs through ${agent.via}.` : ''
+          : ` Orders mode is unavailable here: ${agent.reason}`);
     teamSection.querySelector('.section-title')!.textContent = play ? 'Your team' : 'Teams';
     roster.hidden = !play;
     teamHint.hidden = !play;

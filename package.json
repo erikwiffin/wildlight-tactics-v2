@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host",
     "build:single": "npm run build && node scripts/inline.mjs",
+    "build:artifact": "npm run build:single && node scripts/artifact.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

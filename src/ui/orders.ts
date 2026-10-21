@@ -8,7 +8,7 @@ import { activeUnit, aliveOn, defOf, scoreToWin } from '../core/engine';
 import type { Hex } from '../core/hex';
 import { encodeReplay, type Replay } from '../core/replay';
 import type { Action, GameEvent, MatchConfig, Role, StrategyId } from '../core/types';
-import { AgentError, browserClient, runUnitTurn, type AgentClient } from '../agent/agent';
+import { AgentError, type TurnRunner } from '../agent/agent';
 import { summarizeEvents, unitName } from '../agent/context';
 import { el, esc, modal } from './dom';
 import { cap, copyText, MatchScreen, mono } from './match';
@@ -40,10 +40,10 @@ export class OrdersScreen extends MatchScreen {
   private thinking: number | null = null;
   private wakeFn: (() => void) | null = null;
   private abort: AbortController | null = null;
-  private client: AgentClient;
   private enemy: StrategyId;
   private feedLog: { kind: FeedKind; text: string }[] = [];
   private savedId: string | null = null;
+  private noted = false;
   private tab: 'orders' | 'feed' = 'orders';
   private ui!: {
     card: HTMLDivElement;
@@ -56,11 +56,10 @@ export class OrdersScreen extends MatchScreen {
     rows: Map<number, HTMLElement>;
   };
 
-  constructor(host: HTMLElement, config: MatchConfig, private onExit: (e: PlayExit) => void, client?: AgentClient) {
+  constructor(host: HTMLElement, config: MatchConfig, private onExit: (e: PlayExit) => void, private runner: TurnRunner) {
     const enemy = config.ai?.[1] ?? 'balanced';
     super(host, config, ['You', `${cap(enemy)} AI`]);
     this.enemy = enemy;
-    this.client = client ?? browserClient();
     for (const u of aliveOn(this.state, PLAYER)) this.orders[u.id] = remembered[u.defId] ?? '';
     this.build();
     this.renderHud();
@@ -115,9 +114,8 @@ export class OrdersScreen extends MatchScreen {
       this.renderStatus();
       this.abort = new AbortController();
       try {
-        const res = await runUnitTurn(
+        const res = await this.runner(
           {
-            client: this.client,
             state: () => this.state,
             commit: (a) => this.commitAgent(a),
             onStep: (t) => this.addFeed('step', t),
@@ -127,6 +125,10 @@ export class OrdersScreen extends MatchScreen {
           { ...this.orders },
           this.recent(),
         );
+        if (res.note && !this.noted) {
+          this.noted = true;
+          this.addFeed('system', res.note);
+        }
         this.addFeed('report', `${unitName(u)}: ${res.report}`);
       } catch (e) {
         if (this.disposed) return;

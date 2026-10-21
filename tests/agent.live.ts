@@ -4,7 +4,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { writeFileSync } from 'node:fs';
 import { it } from 'vitest';
 import { nextAiAction } from '../src/core/ai';
-import { runUnitTurn, type AgentClient } from '../src/agent/agent';
+import { apiRunner, type AgentClient } from '../src/agent/agent';
 import { summarizeEvents, unitName } from '../src/agent/context';
 import { activeUnit, applyAction, createMatch, newConfig } from '../src/core/engine';
 
@@ -42,8 +42,8 @@ it('plays agent turns', async () => {
       continue;
     }
     const t0 = Date.now();
-    const res = await runUnitTurn(
-      { client, state: () => s, commit: async (a) => { const ev = applyAction(s, a); recent.push(...summarizeEvents(s, ev)); return ev; } },
+    const res = await apiRunner(client)(
+      { state: () => s, commit: async (a) => { const ev = applyAction(s, a); recent.push(...summarizeEvents(s, ev)); return ev; } },
       u.id, orders, recent.slice(-14),
     );
     agentTurns++;

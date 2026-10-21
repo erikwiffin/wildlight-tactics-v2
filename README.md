@@ -35,8 +35,13 @@ pauses the match with **Retry** and **Skip turn** buttons.
   - caps `max_tokens` and rate-limits requests
   - by default only answers requests from the same computer (`AGENT_ALLOW_LAN=1` opens it to
     your network)
-- Static hosting (including the published artifact) has no proxy, so orders mode shows as
-  unavailable there.
+- **On claude.ai** (the published artifact), the game uses the artifact's `sample` capability
+  instead. Claude runs on the viewer's own Claude account after a one-time permission prompt,
+  with no key involved. The same four tools run in the page.
+  - Build it with `npm run build:artifact` → `dist/artifact.html`.
+  - Publish it declaring `capabilities: {sample: {}}`.
+- Other static hosting has neither a proxy nor `sample`, so orders mode shows as unavailable
+  there.
 
 **Dictation:**
 - It uses the browser's built-in speech recognition, and only needs a secure context: https or
