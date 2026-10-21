@@ -10,11 +10,12 @@ import {
   previewQueue,
   scoreToWin,
 } from '../core/engine';
-import { hexDistance, hexEq } from '../core/hex';
+import { hexDistance, hexEq, type Hex } from '../core/hex';
 import { getMap } from '../core/map';
-import { getAbility, MONSTER_BY_ID } from '../core/monsters';
+import { abilityById, getAbility, MONSTER_BY_ID } from '../core/monsters';
 import type { Action, GameEvent, GameState, MatchConfig, Unit } from '../core/types';
 import { BoardView, STATUS_ICON } from '../render/view';
+import { playFx, type FxContext } from '../render/vfx';
 import { el, esc } from './dom';
 import { loadPrefs, savePrefs } from './store';
 
@@ -137,7 +138,8 @@ export abstract class MatchScreen {
       hp.set(id, hp.get(id)! - amount);
       this.view.setHp(id, hp.get(id)!, this.state.units[id].maxHp);
     };
-    for (const e of events) {
+    for (let i = 0; i < events.length; i++) {
+      const e = events[i];
       if (this.disposed) return;
       switch (e.type) {
         case 'move':
@@ -150,7 +152,8 @@ export abstract class MatchScreen {
           break;
         case 'abilityUsed': {
           const ab = getAbility(this.state.units[e.unit].defId, e.ability);
-          if (ab.affects !== 'self' && !ab.effects.some((x) => x.kind === 'leap')) await this.view.animateLunge(e.unit, e.target);
+          const fx = this.fxContext(events, i, e.unit, e.target, ab.id, pos);
+          await playFx(ab.id, fx, ab.chargeSpeed ? 'charge' : 'cast');
           break;
         }
         case 'castStart':
@@ -161,7 +164,7 @@ export abstract class MatchScreen {
           const caster = this.state.units[e.unit];
           const ab = getAbility(caster.defId, e.ability);
           this.toast(`${defOf(caster).name}: ${ab.name}!`);
-          await this.view.animateArea(abilityArea(this.state, ab, pos.get(e.unit)!, e.target), 0xffd23a);
+          await playFx(ab.id, this.fxContext(events, i, e.unit, e.target, ab.id, pos), 'cast');
           break;
         }
         case 'castFizzle':
@@ -231,6 +234,43 @@ export abstract class MatchScreen {
           break;
       }
     }
+  }
+
+  /** Debug (?debug): play an ability's effect from `caster` at `target`. */
+  debugFx(ability: string, caster: number, target: Hex, phase: 'cast' | 'charge' = 'cast'): Promise<void> {
+    const u = this.state.units[caster];
+    const hit = this.state.units.find((x) => x.alive && hexEq(x.pos, target));
+    const fx = this.fxContext([], 0, caster, target, ability, new Map([[caster, u.pos]]));
+    // Abilities are owned by species; borrow the area shape from the real owner.
+    return playFx(ability, { ...fx, hits: hit ? [hit.id] : [] }, phase);
+  }
+
+  /**
+   * What an effect needs to know about one use of an ability: who and where,
+   * its area, the units its results land on (read ahead in this batch of
+   * events), and where a leaping caster lands.
+   */
+  private fxContext(events: GameEvent[], at: number, caster: number, target: Hex, abilityId: string, pos: Map<number, Hex>): FxContext {
+    const ab = abilityById(abilityId);
+    const hits: number[] = [];
+    let landing: Hex | undefined;
+    for (let j = at + 1; j < events.length; j++) {
+      const e = events[j];
+      if (e.type === 'abilityUsed' || e.type === 'castResolve' || e.type === 'turnStart' || e.type === 'castStart') break;
+      if ((e.type === 'hit' || e.type === 'miss') && e.source === caster && !hits.includes(e.unit)) hits.push(e.unit);
+      if ((e.type === 'heal' || e.type === 'statusAdd') && !hits.includes(e.unit)) hits.push(e.unit);
+      if (e.type === 'displace' && e.unit === caster && !landing) landing = e.path[e.path.length - 1];
+    }
+    return {
+      view: this.view,
+      caster,
+      from: this.view.unitAnchor(caster),
+      target,
+      to: this.view.hexWorld(target),
+      area: abilityArea(this.state, ab, pos.get(caster) ?? this.state.units[caster].pos, target),
+      hits,
+      landing,
+    };
   }
 
   // -------------------------------------------------------------------------

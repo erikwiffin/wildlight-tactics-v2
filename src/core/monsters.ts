@@ -234,3 +234,12 @@ export function getAbility(defId: string, abilityId: string): AbilityDef {
   if (!a) throw new Error(`Unknown ability ${defId}/${abilityId}`);
   return a;
 }
+
+/** Ability ids are unique across the roster, so an id alone identifies one. */
+export function abilityById(abilityId: string): AbilityDef {
+  for (const m of MONSTERS) {
+    const a = m.abilities.find((x) => x.id === abilityId);
+    if (a) return a;
+  }
+  throw new Error(`Unknown ability ${abilityId}`);
+}

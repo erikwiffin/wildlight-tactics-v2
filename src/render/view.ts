@@ -505,6 +505,63 @@ export class BoardView {
     for (const f of flashes) this.scene.remove(f);
   }
 
+  // -------------------------------------------------------------------------
+  // Hooks for the effects layer (vfx.ts)
+
+  /** Device pixels per CSS pixel (point sprites are sized in device pixels). */
+  get pixelRatio(): number {
+    return this.renderer.getPixelRatio();
+  }
+
+  /** Run `step(k)` for k from 0 to 1 over `dur` ms (scaled by playback speed). */
+  animate(dur: number, step: (k: number) => void): Promise<void> {
+    return this.tween(dur, step);
+  }
+
+  /** Top-surface world position of a hex. */
+  hexWorld(h: Hex): THREE.Vector3 {
+    return this.unitWorld(h);
+  }
+
+  /** Where a unit stands right now (its feet), plus `lift` world units up. */
+  unitAnchor(id: number, lift = 0): THREE.Vector3 {
+    const p = this.units.get(id)!.root.position.clone();
+    p.y += lift;
+    return p;
+  }
+
+  /** The unit's scene object (to attach effects that follow it). */
+  unitObject(id: number): THREE.Object3D {
+    return this.units.get(id)!.root;
+  }
+
+  /** Add a temporary effect object; the returned function removes and disposes it. */
+  addFx(obj: THREE.Object3D): () => void {
+    this.scene.add(obj);
+    return () => {
+      obj.removeFromParent();
+      obj.traverse((o) => {
+        const m = o as THREE.Mesh;
+        m.geometry?.dispose();
+        const mats = Array.isArray(m.material) ? m.material : m.material ? [m.material] : [];
+        for (const mat of mats) mat.dispose();
+      });
+    };
+  }
+
+  private shakeUntil = 0;
+  private shakeAmp = 0;
+  private shakeDur = 1;
+  readonly reducedMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  /** Brief camera shake (skipped when the viewer prefers reduced motion). */
+  shake(amount: number, ms: number): void {
+    if (this.reducedMotion) return;
+    this.shakeAmp = amount;
+    this.shakeDur = ms / this.speed;
+    this.shakeUntil = performance.now() + this.shakeDur;
+  }
+
   wait(ms: number): Promise<void> {
     return this.tween(ms, () => {});
   }
@@ -750,6 +807,15 @@ export class BoardView {
     }
     for (const el of this.overlay.querySelectorAll<HTMLElement>('.float-text')) {
       this.positionEl(el, new THREE.Vector3(Number(el.dataset.x), Number(el.dataset.y), Number(el.dataset.z)));
+    }
+    if (this.shakeUntil > now) {
+      this.updateCamera();
+      const a = (this.shakeAmp * (this.shakeUntil - now)) / this.shakeDur;
+      this.camera.position.x += (Math.random() - 0.5) * a;
+      this.camera.position.y += (Math.random() - 0.5) * a;
+    } else if (this.shakeAmp) {
+      this.shakeAmp = 0;
+      this.updateCamera();
     }
     this.renderer.render(this.scene, this.camera);
   }
