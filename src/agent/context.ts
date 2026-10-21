@@ -176,6 +176,39 @@ export function describeFrom(state: GameState, u: Unit, to: Hex): string {
   ].join('\n');
 }
 
+const SQRT3 = Math.sqrt(3);
+
+/**
+ * Names for each Beacon as one side sees the map: "center", "home",
+ * "enemy home", or "left/right flank" (left as seen from that side's spawn).
+ * Players say "hold the center Beacon"; these names let the agent match that.
+ */
+export function beaconNames(state: GameState, team: 0 | 1): string[] {
+  const map = getMap(state.config.mapId).def;
+  const near = (h: Hex, spawns: Hex[]) => Math.min(...spawns.map((s) => hexDistance(h, s)));
+  // Lean > 0: closer to our spawn. Only the single most one-sided Beacon per side is a "home".
+  const lean = state.beacons.map((b) => near(b.pos, map.spawns[team === 0 ? 1 : 0]) - near(b.pos, map.spawns[team]));
+  const homeIdx = lean.indexOf(Math.max(...lean));
+  const enemyIdx = lean.indexOf(Math.min(...lean));
+  const names = state.beacons.map((b, i) => {
+    if (b.pos.q === 0 && b.pos.r === 0) return 'center';
+    if (i === homeIdx && lean[i] >= 2) return 'home';
+    if (i === enemyIdx && lean[i] <= -2) return 'enemy home';
+    const x = SQRT3 * (b.pos.q + b.pos.r / 2);
+    // Team 0 spawns at the bottom of the board looking up; Team 1 looks down, so its left is mirrored.
+    return (team === 0 ? x < 0 : x > 0) ? 'left flank' : 'right flank';
+  });
+  // Disambiguate any repeats (e.g. two left-flank Beacons on a lane map).
+  return names.map((n, i) => (names.filter((m) => m === n).length > 1 ? `${n} ${names.slice(0, i + 1).filter((m) => m === n).length}` : n));
+}
+
+/** One line listing the map's Beacons by name, and which common names it lacks. */
+export function beaconSummary(state: GameState, team: 0 | 1): string {
+  const names = beaconNames(state, team);
+  const missing = ['center', 'home', 'enemy home'].filter((n) => !names.includes(n));
+  return `This map has ${names.length} Beacons: ${names.map((n, i) => `B${i + 1} = ${n}`).join(', ')}.${missing.length ? ` It has no ${missing.join(' or ')} Beacon; if an order names one, use the closest match.` : ''}`;
+}
+
 export interface Orders {
   [unitId: number]: string;
 }
@@ -187,6 +220,15 @@ export function turnBriefing(state: GameState, unitId: number, orders: Orders, r
   const my = u.team;
   const foe = my === 0 ? 1 : 0;
   const moves = turnMoves(state, u);
+  const names = beaconNames(state, my);
+  const held = [state.beacons.filter((b) => b.owner === my).length, state.beacons.filter((b) => b.owner === foe).length];
+  const target = scoreToWin(state);
+  const pressure =
+    held[1] > held[0]
+      ? `The enemy holds more Beacons (${held[1]} vs ${held[0]}): at this rate they reach ${target} in about ${Math.ceil((target - state.score[foe]) / held[1])} Pulses. Taking or contesting a Beacon matters.`
+      : held[0] > held[1]
+        ? `We hold more Beacons (${held[0]} vs ${held[1]}).`
+        : `Beacons are even (${held[0]} each).`;
   const beacons = state.beacons
     .map((b, i) => {
       const d = hexDistance(u.pos, b.pos);
@@ -199,7 +241,7 @@ export function turnBriefing(state: GameState, unitId: number, orders: Orders, r
         const left = hexDistance(best, b.pos);
         toward = left === 0 ? ', you can reach it this turn' : `, closest you can get this turn: ${hx(best)} (${left} away)`;
       }
-      return `B${i + 1} ${hx(b.pos)} h${tileAt(state, b.pos)?.h ?? 0}: ${owner}${on}; ${d === 0 ? 'you are on it' : `${d} hexes from you`}${toward}`;
+      return `B${i + 1} (${names[i]}) ${hx(b.pos)} h${tileAt(state, b.pos)?.h ?? 0}: ${owner}${on}; ${d === 0 ? 'you are on it' : `${d} hexes from you`}${toward}`;
     })
     .join('\n');
   const teammates = aliveOn(state, my).filter((x) => x.id !== u.id);
@@ -209,7 +251,9 @@ export function turnBriefing(state: GameState, unitId: number, orders: Orders, r
   return [
     `# Situation`,
     `Map: ${map.name} (${map.teamSize}v${map.teamSize}). Score: us ${state.score[my]}, enemy ${state.score[foe]}; first to ${scoreToWin(state)}. Each Pulse scores 1 per Beacon held.`,
+    beaconSummary(state, my),
     `Beacons:\n${beacons}`,
+    pressure,
     `Turn order: ${queueLine(state, u)}.`,
     spikes.length ? `Enemy spike fields (entering costs 14 HP and stops you): ${spikes.join(' ')}.` : '',
     fallen.length ? `Knocked out (permanent): ${fallen.join(', ')}.` : '',

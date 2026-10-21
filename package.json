@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "sim": "SIM=1 vitest run"
+    "sim": "SIM=1 vitest run",
+    "inspect": "TOOL=1 vitest run"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.0.0",

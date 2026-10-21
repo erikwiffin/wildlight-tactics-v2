@@ -9,24 +9,38 @@ import type { Hex } from '../core/hex';
 import { encodeReplay, type Replay } from '../core/replay';
 import type { Action, GameEvent, MatchConfig, Role, StrategyId } from '../core/types';
 import { AgentError, type TurnRunner } from '../agent/agent';
-import { summarizeEvents, unitName } from '../agent/context';
+import { beaconNames, summarizeEvents, unitName } from '../agent/context';
 import { el, esc, modal } from './dom';
 import { cap, copyText, MatchScreen, mono } from './match';
 import type { PlayExit } from './play';
 import { micButton } from './speech';
+import { buildMatchLog, showExport, type AgentTurnLog } from './matchlog';
 import { saveMatch } from './store';
 
 const PLAYER = 0;
 
-const EXAMPLES: Record<Role, string> = {
-  tank: 'Hold the center Beacon and keep enemies off our healer.',
-  skirmisher: 'Steal undefended Beacons; avoid fair fights.',
-  support: 'Stay behind the tank and keep everyone healed.',
-  zoner: 'Spike the approaches to our home Beacon and guard it.',
-  ranged: 'Stay on high ground and shoot whoever threatens the tank.',
-  assassin: 'Flank their backline and finish wounded enemies.',
-  controller: 'Pull enemies off our Beacons and slow anyone rushing us.',
-};
+/**
+ * Example orders written for the current map, using the Beacon names the
+ * agent sees (a map without a center Beacon gets orders about its flanks).
+ */
+function exampleOrder(role: Role, names: string[]): string {
+  const has = (n: string) => names.includes(n);
+  const flanks = names.filter((n) => n.includes('flank'));
+  const main = has('center') ? 'the center Beacon' : flanks.length ? `the ${flanks[0]} Beacon` : 'the nearest Beacon';
+  const second = flanks.find((f) => `the ${f} Beacon` !== main);
+  const side = second ? `the ${second} Beacon` : has('home') ? 'our home Beacon' : main;
+  const guard = has('home') ? 'our home Beacon' : side;
+  const raid = has('enemy home') ? 'their home Beacon' : side;
+  switch (role) {
+    case 'tank': return `Take and hold ${main}. Keep enemies off our healer.`;
+    case 'skirmisher': return `Grab ${raid} when it's unguarded; otherwise harass their healer.`;
+    case 'support': return `Follow the tank to ${main} and keep everyone healed.`;
+    case 'zoner': return `Take ${guard} and hold it with spike fields and volleys.`;
+    case 'ranged': return `Find high ground near ${main} and shoot whoever threatens the tank.`;
+    case 'assassin': return `Flank toward ${raid} and finish off wounded enemies.`;
+    case 'controller': return `Pull enemies off ${main} and slow anyone rushing us.`;
+  }
+}
 
 /** Orders survive rematches within a session, keyed by monster. */
 const remembered: Record<string, string> = {};
@@ -44,6 +58,7 @@ export class OrdersScreen extends MatchScreen {
   private feedLog: { kind: FeedKind; text: string }[] = [];
   private savedId: string | null = null;
   private noted = false;
+  private agentTurns: AgentTurnLog[] = [];
   private tab: 'orders' | 'feed' = 'orders';
   private ui!: {
     card: HTMLDivElement;
@@ -101,6 +116,7 @@ export class OrdersScreen extends MatchScreen {
         const a = nextAiAction(this.state, this.enemy);
         await this.telegraph(a);
         this.logEvents(await this.commit(a), 'enemy');
+        if (a.type === 'end') this.save();
         continue;
       }
       const order = this.orders[u.id]?.trim();
@@ -113,6 +129,8 @@ export class OrdersScreen extends MatchScreen {
       this.thinking = u.id;
       this.renderStatus();
       this.abort = new AbortController();
+      const record: AgentTurnLog = { at: this.log.length, unit: u.id, orders: { ...this.orders }, trace: [], ms: 0 };
+      const t0 = performance.now();
       try {
         const res = await this.runner(
           {
@@ -130,15 +148,20 @@ export class OrdersScreen extends MatchScreen {
           this.addFeed('system', res.note);
         }
         this.addFeed('report', `${unitName(u)}: ${res.report}`);
+        Object.assign(record, { trace: res.trace, report: res.report, note: res.note, model: res.model });
       } catch (e) {
         if (this.disposed) return;
         const msg = e instanceof AgentError ? e.message : `Unexpected error: ${(e as Error).message}`;
+        Object.assign(record, { trace: e instanceof AgentError ? e.trace : [], error: msg });
         this.addFeed('error', `${unitName(u)}: ${msg}`);
         this.setPaused(true, `${unitName(u)}'s turn stopped: ${msg}`, true);
       } finally {
+        record.ms = Math.round(performance.now() - t0);
+        this.agentTurns.push(record);
         this.thinking = null;
         this.abort = null;
         this.renderStatus();
+        this.save(); // record as we go, so an unfinished match is in the library too
       }
     }
     if (!this.disposed) this.gameOver();
@@ -220,7 +243,10 @@ export class OrdersScreen extends MatchScreen {
     const status = el('div', 'agent-status');
     const go = el('button', 'primary', 'Start');
     go.onclick = () => (this.paused ? this.resume() : this.setPaused(true, 'Paused. Orders apply from each unit’s next turn.'));
-    bar.append(status, go);
+    const exp = el('button', 'ghost', 'Export');
+    exp.title = 'Copy a log of every action and Claude turn so far';
+    exp.onclick = () => showExport(this.matchLog());
+    bar.append(status, exp, go);
     const alert = el('div', 'agent-alert');
     alert.hidden = true;
     const tabsRow = el('div', 'tabs');
@@ -247,7 +273,7 @@ export class OrdersScreen extends MatchScreen {
       const ta = el('textarea', 'order-input');
       ta.id = `order-${u.id}`;
       ta.rows = 2;
-      ta.placeholder = `e.g. ${EXAMPLES[defOf(u).role]}`;
+      ta.placeholder = `e.g. ${exampleOrder(defOf(u).role, beaconNames(this.state, PLAYER))}`;
       ta.value = this.orders[u.id] ?? '';
       ta.oninput = () => this.setOrder(u.id, ta.value);
       const field = el('div', 'order-field');
@@ -261,7 +287,7 @@ export class OrdersScreen extends MatchScreen {
     const fill = el('button', 'ghost small', 'Fill example orders');
     fill.onclick = () => {
       for (const u of this.state.units.filter((x) => x.team === PLAYER)) {
-        if (!this.orders[u.id]?.trim()) this.setOrder(u.id, EXAMPLES[defOf(u).role]);
+        if (!this.orders[u.id]?.trim()) this.setOrder(u.id, exampleOrder(defOf(u).role, beaconNames(this.state, PLAYER)));
       }
     };
     ordersPane.append(fill);
@@ -339,8 +365,15 @@ export class OrdersScreen extends MatchScreen {
     return { config: this.state.config, actions: [...this.log] };
   }
 
+  private matchLog(): string {
+    return buildMatchLog(this.replay(), this.state, 'orders', {
+      agentTurns: this.agentTurns,
+      feed: this.feedLog.map((f) => `${f.kind}: ${f.text}`),
+    });
+  }
+
   private save(): void {
-    if (this.log.length) this.savedId = saveMatch(this.replay(), this.state, this.savedId ?? undefined);
+    if (this.log.length) this.savedId = saveMatch(this.replay(), this.state, this.savedId ?? undefined, { mode: 'orders', log: this.matchLog() });
   }
 
   protected openMenu(): void {
@@ -351,10 +384,12 @@ export class OrdersScreen extends MatchScreen {
       <textarea readonly>${code}</textarea>
       <div class="btns">
         <button data-a="copy">Copy replay code</button>
+        <button data-a="export">Export match log</button>
         <button data-a="quit">Save and quit</button>
       </div>
       <button data-a="close" class="primary">Close</button>`, {
       copy: () => copyText(code),
+      export: () => { close(); showExport(this.matchLog()); },
       quit: () => { close(); this.save(); this.onExit({ to: 'setup' }); },
       close: () => close(),
     });

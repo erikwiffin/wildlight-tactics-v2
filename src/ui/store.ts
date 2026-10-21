@@ -18,12 +18,16 @@ export interface SavedMatch {
   rulesVersion: number;
   code: string;
   mapId: string;
-  mode: 'play' | 'aivai';
+  mode: 'play' | 'aivai' | 'orders';
   ai: [StrategyId | null, StrategyId | null];
   winner: 0 | 1 | 'draw' | null;
   score: [number, number];
   actions: number;
+  /** Full match log (JSON) for orders-mode games: orders, tool calls, reports. */
+  log?: string;
 }
+
+const MAX_LOG_CHARS = 400_000;
 
 function read<T>(key: string, fallback: T): T {
   try {
@@ -55,7 +59,7 @@ export function defaultName(r: Replay, final: GameState): string {
 }
 
 /** Save (or update, when `id` is given) a match. Returns its id, or null if storage is unavailable. */
-export function saveMatch(r: Replay, final: GameState, id?: string): string | null {
+export function saveMatch(r: Replay, final: GameState, id?: string, extra: { mode?: SavedMatch['mode']; log?: string } = {}): string | null {
   const lib = loadLibrary();
   const existing = id ? lib.find((m) => m.id === id) : undefined;
   const entry: SavedMatch = {
@@ -65,14 +69,18 @@ export function saveMatch(r: Replay, final: GameState, id?: string): string | nu
     rulesVersion: r.config.rulesVersion,
     code: encodeReplay(r),
     mapId: r.config.mapId,
-    mode: r.config.ai?.[0] == null ? 'play' : 'aivai',
+    mode: extra.mode ?? (r.config.ai?.[0] == null ? 'play' : 'aivai'),
     ai: r.config.ai ?? [null, 'balanced'],
     winner: final.winner,
     score: [...final.score],
     actions: r.actions.length,
+    ...(extra.log && extra.log.length <= MAX_LOG_CHARS ? { log: extra.log } : {}),
   };
   const next = [entry, ...lib.filter((m) => m.id !== entry.id)].slice(0, MAX_SAVED);
-  return write(LIB_KEY, next) ? entry.id : null;
+  if (write(LIB_KEY, next)) return entry.id;
+  // Storage full: keep the replay, drop the bulky log.
+  delete entry.log;
+  return write(LIB_KEY, [entry, ...lib.filter((m) => m.id !== entry.id)].slice(0, MAX_SAVED)) ? entry.id : null;
 }
 
 export function renameMatch(id: string, name: string): void {

@@ -18,6 +18,7 @@ import { encodeReplay, type Replay } from '../core/replay';
 import type { GameState, MatchConfig, StrategyId, Unit } from '../core/types';
 import { el, esc, modal } from './dom';
 import { cap, copyText, MatchScreen, pct } from './match';
+import { buildMatchLog, showExport } from './matchlog';
 import { saveMatch } from './store';
 
 const PLAYER = 0;
@@ -88,6 +89,13 @@ export class PlayScreen extends MatchScreen {
 
   private save(): void {
     if (this.log.length) this.savedId = saveMatch(this.replay(), this.state, this.savedId ?? undefined);
+  }
+
+  /** Record as we go: every finished turn updates this match's library entry. */
+  protected async commit(a: Parameters<MatchScreen['commit']>[0]) {
+    const events = await super.commit(a);
+    if (a.type === 'end') this.save();
+    return events;
   }
 
   // -------------------------------------------------------------------------
@@ -308,10 +316,12 @@ export class PlayScreen extends MatchScreen {
       <textarea readonly>${code}</textarea>
       <div class="btns">
         <button data-a="copy">Copy replay code</button>
+        <button data-a="export">Export match log</button>
         <button data-a="quit">Save and quit</button>
       </div>
       <button data-a="close" class="primary">Resume</button>`, {
       copy: () => copyText(code),
+      export: () => { close(); showExport(buildMatchLog(this.replay(), this.state, 'direct')); },
       quit: () => { close(); this.save(); this.onExit({ to: 'setup' }); },
       close: () => close(),
     });

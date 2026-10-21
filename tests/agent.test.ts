@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { describe, expect, it } from 'vitest';
 import { AgentError, apiRunner, sampleRunner, SYSTEM_PROMPT, type AgentClient, type SampleFn } from '../src/agent/agent';
-import { turnBriefing } from '../src/agent/context';
+import { beaconNames, turnBriefing } from '../src/agent/context';
 import { activeUnit, applyAction, createMatch, newConfig, reachable } from '../src/core/engine';
 import type { GameState } from '../src/core/types';
 
@@ -205,5 +205,26 @@ describe('claude.ai sample backend', () => {
     const s = match();
     const { fn } = fakeSample([{ tool: 'check_position', input: { q: 0, r: 0 } }]);
     await expect(sampleRunner(fn)(deps(s), 0, { 0: 'x' }, [])).rejects.toThrow(AgentError);
+  });
+});
+
+describe('beacon names (how orders refer to Beacons)', () => {
+  const names = (mapId: string, team: 0 | 1, size: number) => {
+    const t = ['rhino', 'fox', 'moth', 'eel', 'lynx'].slice(0, size);
+    return beaconNames(createMatch(newConfig('n', [t, t], mapId)), team);
+  };
+  it('names home, enemy home and center on Shattered Basin, mirrored per side', () => {
+    expect(names('arena', 0, 4)).toEqual(['home', 'enemy home', 'center']);
+    expect(names('arena', 1, 4)).toEqual(['enemy home', 'home', 'center']);
+  });
+  it('names flanks as each side sees them on Glass Hollow, which has no center or home', () => {
+    expect(names('hollow', 0, 3)).toEqual(['left flank', 'right flank']);
+    expect(names('hollow', 1, 3)).toEqual(['right flank', 'left flank']);
+    const s = createMatch(newConfig('n', [['rhino', 'fox', 'moth'], ['rhino', 'fox', 'moth']], 'hollow'));
+    expect(turnBriefing(s, 0, {}, [])).toContain('It has no center or home or enemy home Beacon');
+  });
+  it('covers the lane and ring maps', () => {
+    expect(names('fault', 0, 5)).toEqual(['home', 'enemy home', 'left flank', 'right flank', 'center']);
+    expect(names('caldera', 0, 4)).toEqual(['home', 'enemy home', 'left flank', 'right flank']);
   });
 });

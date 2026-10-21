@@ -53,6 +53,27 @@ pauses the match with **Retry** and **Skip turn** buttons.
 LIVE=1 npx vitest run    # plays a few real agent turns against the API -> live-report.txt
 ```
 
+## Recording and debugging matches
+
+- **Every match is recorded as it's played** (tap commands, orders mode and AI vs AI), and
+  updated in the Library after each turn. An unfinished match shows as *In progress*.
+- **Export match log:**
+  - Where: the Export button in orders mode, or ☰ → Export match log.
+  - What: one JSON text with the replay code. In orders mode it also carries each Claude turn:
+    the orders in force, every tool call with its result, the report or error, the model and
+    the timing.
+  - The Library's *Copy log* button gives the same text for saved orders-mode games, and
+    *Import code* accepts a log as well as a replay code.
+- **Inspecting a log:**
+
+  ```sh
+  LOG=path/to/log.json npm run inspect      # -> inspect-report.txt
+  ```
+
+  This replays the match and prints, for each Claude turn, the exact briefing it was given,
+  then its tool calls and report. Optional: `TURNS=3,4` to filter, `BRIEFING=0` to skip
+  briefings.
+
 Add `?debug` to the URL to expose the current screen as `window.wl` for automated UI tests.
 
 ## Layout

@@ -89,18 +89,29 @@ export function resolveAgent(): Promise<AgentBackend> {
   })());
 }
 
-export class AgentError extends Error {}
+export class AgentError extends Error {
+  /** Tool calls made before the failure, for the match log. */
+  trace: ToolCallRecord[] = [];
+}
+
+/** One tool call as recorded in the match log. */
+export interface ToolCallRecord {
+  tool: string;
+  input: Record<string, unknown>;
+  result: string;
+  error?: boolean;
+}
 
 export const SYSTEM_PROMPT = `You are the on-board intelligence of one nanite-infected animal in Wildlight Tactics, a turn-based tactics game on a hex grid. Your commander (the player) gives each animal a standing order in plain language. You take this unit's turn by calling tools.
 
 How a turn works
 - You may move once and use one ability once, in either order, then you must call end_turn exactly once. Moving and acting are both optional.
 - Each tool result tells you what happened. Your turn ends the moment you call end_turn.
-- Doing less makes your next turn come sooner: a turn with no move and no action costs the least time.
+- Turn timing: a turn with no move and no action comes back around a little sooner.
 
 Rules
 - Coordinates are axial hex (q,r). Distances are in hexes. "h" is tile height (0-3).
-- Beacons: end your turn standing on one with no enemy adjacent to capture it. Each Pulse gives 1 point per Beacon held. First to the target score wins; a team that loses every unit loses. Knockouts are permanent.
+- Beacons: you capture one only by ENDING your turn standing ON its hex with no enemy adjacent; pushing an enemy off is not enough. Each Pulse gives 1 point per Beacon held. First to the target score wins; a team that loses every unit loses. Knockouts are permanent.
 - Facing: units face E, NE, NW, W, SW or SE. Attacks from the flank do +25% damage and +15% hit chance; from directly behind, +50% damage and they always hit. End your turn facing the biggest threat.
 - Height: +10% damage per level above the target. Ranged attacks gain +1 range from 2+ levels up.
 - Abilities marked "needs line of sight" are blocked by rock, high walls and any unit in the way, allies included.
@@ -108,12 +119,14 @@ Rules
 - Hit chances are real odds; you only learn the result after acting.
 
 Following orders
+- Beacons win the match. Read every order in that light: "protect the healer" means protect it while the team fights for Beacons, not hide at the spawn. If the enemy holds more Beacons than we do, standing still is losing unless your order clearly says to hold where you are.
+- Orders name Beacons the way the briefing does: center, home, enemy home, left flank, right flank. If an order names a Beacon this map doesn't have, act on the closest match (usually the nearest Beacon that is neutral or theirs) and name the one you chose in your report.
 - Your own order comes first. Read your teammates' orders and support their plans: if the tank is ordered to hold a Beacon and you are ordered to protect the tank, stay near the tank and heal or defend it.
 - Orders persist across turns. Apply them sensibly to the current situation; if an order can't be carried out this turn, do the most useful thing that serves it.
 - Use only the briefing and tool results; never invent positions or numbers. check_position shows what you could do from a reachable hex without committing.
 - Be quick. Usually call move and/or use_ability, then end_turn, in a single reply; tools run in the order you call them.
 
-end_turn's report is shown to your commander: one short first-person sentence (at most 20 words) saying what you did and how it serves your order.`;
+end_turn's report is shown to your commander: one short first-person sentence (at most 20 words) saying what you actually did this turn and how it serves your order. Never claim a move or capture that didn't happen.`;
 
 const coord = { type: 'integer' as const };
 
@@ -172,6 +185,10 @@ export interface TurnResult {
   steps: string[];
   /** Something the player should know about how the turn was played (e.g. a model substitution). */
   note?: string;
+  /** Every tool call this turn, for the match log. */
+  trace: ToolCallRecord[];
+  /** The model that played, when known. */
+  model?: string;
 }
 
 /** Play one unit's turn. Throws AgentError when it can't finish; the turn may be partly done. */
@@ -182,6 +199,7 @@ type ToolOutcome = { text: string; error?: boolean; ended?: boolean };
 /** The four tools, bound to one unit's turn. Shared by both backends. */
 function turnTools(deps: TurnDeps, unitId: number) {
   const steps: string[] = [];
+  const trace: ToolCallRecord[] = [];
   let checks = 0;
   let report = '';
   const myTurn = () => {
@@ -251,19 +269,32 @@ function turnTools(deps: TurnDeps, unitId: number) {
     }
   };
 
+  const recorded = async (name: string, input: Record<string, unknown>): Promise<ToolOutcome> => {
+    const out = await exec(name, input);
+    trace.push({ tool: name, input, result: out.text.length > 500 ? out.text.slice(0, 500) + '…' : out.text, ...(out.error ? { error: true } : {}) });
+    return out;
+  };
+  const fail = (msg: string): AgentError => {
+    const e = new AgentError(msg);
+    e.trace = trace;
+    return e;
+  };
+
   return {
-    exec,
+    exec: recorded,
+    fail,
     myTurn,
     steps,
     ended: () => !myTurn(),
-    result: (): TurnResult => ({ report: report || steps[steps.length - 1] || 'Done.', steps }),
+    result: (): TurnResult => ({ report: report || steps[steps.length - 1] || 'Done.', steps, trace }),
   };
 }
 
 /** Backend 1: the Anthropic SDK through the dev proxy, with a manual loop that stops at end_turn. */
 export function apiRunner(client: AgentClient): TurnRunner {
   return async (deps, unitId, orders, recent) => {
-  const { exec, myTurn, result } = turnTools(deps, unitId);
+  const { exec, myTurn, result, fail } = turnTools(deps, unitId);
+  const done = (): TurnResult => ({ ...result(), model: AGENT_MODEL });
   const messages: Anthropic.MessageParam[] = [{ role: 'user', content: turnBriefing(deps.state(), unitId, orders, recent) }];
   let nudged = false;
   for (let call = 0; call < MAX_CALLS; call++) {
@@ -283,14 +314,14 @@ export function apiRunner(client: AgentClient): TurnRunner {
       );
     } catch (e) {
       if (e instanceof Anthropic.APIUserAbortError) throw e;
-      if (e instanceof Anthropic.AuthenticationError) throw new AgentError('The API key was rejected. Check ANTHROPIC_API_KEY in .env.local.');
-      if (e instanceof Anthropic.RateLimitError) throw new AgentError('Rate limited by the API. Wait a moment, then retry.');
-      if (e instanceof Anthropic.APIConnectionTimeoutError) throw new AgentError('The model took too long to answer.');
-      if (e instanceof Anthropic.APIError) throw new AgentError(`API error${e.status ? ' ' + e.status : ''}: ${e.message}`);
-      throw new AgentError(`Could not reach the agent: ${(e as Error).message}`);
+      if (e instanceof Anthropic.AuthenticationError) throw fail('The API key was rejected. Check ANTHROPIC_API_KEY in .env.local.');
+      if (e instanceof Anthropic.RateLimitError) throw fail('Rate limited by the API. Wait a moment, then retry.');
+      if (e instanceof Anthropic.APIConnectionTimeoutError) throw fail('The model took too long to answer.');
+      if (e instanceof Anthropic.APIError) throw fail(`API error${e.status ? ' ' + e.status : ''}: ${e.message}`);
+      throw fail(`Could not reach the agent: ${(e as Error).message}`);
     }
-    if (res.stop_reason === 'refusal') throw new AgentError('The model declined to play this turn.');
-    if (res.stop_reason === 'max_tokens') throw new AgentError('The model ran out of room before finishing its turn.');
+    if (res.stop_reason === 'refusal') throw fail('The model declined to play this turn.');
+    if (res.stop_reason === 'max_tokens') throw fail('The model ran out of room before finishing its turn.');
     messages.push({ role: 'assistant', content: res.content });
 
     const uses = res.content.filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
@@ -311,11 +342,11 @@ export function apiRunner(client: AgentClient): TurnRunner {
       results.push({ type: 'tool_result', tool_use_id: tu.id, content: out.text, ...(out.error ? { is_error: true } : {}) });
       if (out.ended) ended = true;
     }
-    if (ended || !myTurn()) return result();
+    if (ended || !myTurn()) return done();
     messages.push({ role: 'user', content: results });
   }
-  if (!myTurn()) return result();
-  throw new AgentError(`The agent did not finish its turn (no end_turn after ${MAX_CALLS} calls).`);
+  if (!myTurn()) return done();
+  throw fail(`The agent did not finish its turn (no end_turn after ${MAX_CALLS} calls).`);
   };
 }
 
@@ -355,21 +386,23 @@ export function sampleRunner(sample: SampleFn): TurnRunner {
     }));
     const prompt = `${SYSTEM_PROMPT}\n\n---\n\n${turnBriefing(deps.state(), unitId, orders, recent)}\n\nTake this unit's turn now with the tools, and finish with end_turn.`;
     let note: string | undefined;
+    let model: string | undefined;
     try {
       const res = await sample(prompt, { tools, model: AGENT_MODEL, modelTier: 'quick', effort: 'low', signal: ctl.signal });
+      model = res.modelApplied ?? `${res.modelTierApplied} tier`;
       if (res.modelApplied !== AGENT_MODEL) note = `Claude Haiku 5.5 wasn't available for this account, so Claude's ${res.modelTierApplied} tier played this turn.`;
     } catch (e) {
       const code = (e as { code?: string }).code;
-      if (code === 'cancelled' && deps.signal?.aborted) throw new AgentError('Stopped.');
+      if (code === 'cancelled' && deps.signal?.aborted) throw t.fail('Stopped.');
       if (code !== 'cancelled' || !t.ended()) {
         if (t.ended()) return t.result(); // the turn finished; a late failure doesn't matter
-        throw new AgentError(SAMPLE_ERRORS[code ?? ''] ?? `Claude couldn't finish this turn (${code ?? 'unknown error'}).`);
+        throw t.fail(SAMPLE_ERRORS[code ?? ''] ?? `Claude couldn't finish this turn (${code ?? 'unknown error'}).`);
       }
     } finally {
       deps.signal?.removeEventListener('abort', onOuterAbort);
     }
-    if (!t.ended()) throw new AgentError('Claude stopped without ending its turn.');
-    return { ...t.result(), note };
+    if (!t.ended()) throw t.fail('Claude stopped without ending its turn.');
+    return { ...t.result(), note, model };
   };
 }
 

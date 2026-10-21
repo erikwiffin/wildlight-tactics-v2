@@ -2,6 +2,7 @@
 
 import { MAPS } from '../core/map';
 import { decodeReplay, type Replay } from '../core/replay';
+import { parseMatchLog } from './matchlog';
 import { el, esc, modal } from './dom';
 import { micButton } from './speech';
 import { cap, copyText } from './match';
@@ -21,14 +22,14 @@ export function showLibrary(host: HTMLElement, onWatch: (r: Replay) => void, onB
   importBtn.onclick = () => {
     const close = modal(`
       <h2>Import replay</h2>
-      <textarea id="import-code" placeholder="Paste a replay code"></textarea>
+      <textarea id="import-code" placeholder="Paste a replay code or match log"></textarea>
       <div class="hint" id="import-msg"></div>
       <div class="btns"><button data-a="cancel">Cancel</button><button data-a="go" class="primary">Watch</button></div>`, {
       cancel: () => close(),
       go: () => {
         const ta = document.getElementById('import-code') as HTMLTextAreaElement;
         try {
-          const r = decodeReplay(ta.value);
+          const r = parseMatchLog(ta.value).replay;
           close();
           onWatch(r);
         } catch {
@@ -53,8 +54,11 @@ export function showLibrary(host: HTMLElement, onWatch: (r: Replay) => void, onB
   const row = (m: SavedMatch): HTMLElement => {
     const item = el('div', 'lib-item');
     const map = MAPS[m.mapId]?.name ?? m.mapId;
-    const sides = m.mode === 'play' ? `You vs ${cap(m.ai[1] ?? 'balanced')} AI` : `${cap(m.ai[0] ?? 'balanced')} vs ${cap(m.ai[1] ?? 'balanced')}`;
-    const result = m.winner === null ? 'Unfinished' : m.winner === 'draw' ? 'Draw' : m.mode === 'play' ? (m.winner === 0 ? 'Victory' : 'Defeat') : m.winner === 0 ? 'Blue won' : 'Orange won';
+    const vsAi = m.mode === 'play' || m.mode === 'orders';
+    const sides = vsAi
+      ? `You${m.mode === 'orders' ? ' (orders)' : ''} vs ${cap(m.ai[1] ?? 'balanced')} AI`
+      : `${cap(m.ai[0] ?? 'balanced')} vs ${cap(m.ai[1] ?? 'balanced')}`;
+    const result = m.winner === null ? 'In progress' : m.winner === 'draw' ? 'Draw' : vsAi ? (m.winner === 0 ? 'Victory' : 'Defeat') : m.winner === 0 ? 'Blue won' : 'Orange won';
     const date = new Date(m.savedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
     const name = el('div', 'lib-name', m.name);
     const meta = el('div', 'lib-meta');
@@ -74,6 +78,15 @@ export function showLibrary(host: HTMLElement, onWatch: (r: Replay) => void, onB
       copy.textContent = 'Copied';
       setTimeout(() => (copy.textContent = 'Copy code'), 1200);
     };
+    const copyLog = m.log ? el('button', '', 'Copy log') : null;
+    if (copyLog) {
+      copyLog.title = 'Every action plus each Claude turn: paste it to Claude to debug';
+      copyLog.onclick = () => {
+        copyText(m.log!);
+        copyLog.textContent = 'Copied';
+        setTimeout(() => (copyLog.textContent = 'Copy log'), 1200);
+      };
+    }
     const rename = el('button', '', 'Rename');
     rename.onclick = () => {
       const input = el('input', 'lib-rename');
@@ -113,7 +126,7 @@ export function showLibrary(host: HTMLElement, onWatch: (r: Replay) => void, onB
         del.classList.add('danger');
       }
     };
-    btns.append(watch, copy, rename, del);
+    btns.append(...[watch, copy, copyLog, rename, del].filter((b): b is HTMLButtonElement => !!b));
     item.append(name, meta, btns);
     return item;
   };

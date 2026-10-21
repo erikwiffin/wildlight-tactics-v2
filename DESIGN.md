@@ -235,6 +235,21 @@ Both backends share the briefing and the four tools (`turnTools` in `src/agent/a
    - The call is left to finish after `end_turn` (one short wrap-up round), so its result can
      confirm Haiku answered. If the platform had to use another tier, the feed says so.
 
+### Beacon names
+The briefing names each Beacon as the unit's side sees it: *home*, *enemy home*, *center*,
+*left flank* or *right flank* (`beaconNames`). It also says which of those names the map lacks.
+
+That means an order like "hold the center Beacon" maps onto something real. On a map with
+no center Beacon, the agent picks the closest match and says which one it chose.
+
+The prompt also frames every order around the win condition: when the enemy holds more
+Beacons, standing still is losing. Example orders are generated from the map's own Beacon
+names.
+
+*Found via a bug report:* on Glass Hollow (flank Beacons only), the old generic example
+orders named a "center" and a "home" Beacon. Units kept to the back row while the enemy
+took both Beacons.
+
 ### Failures
 API errors, timeouts, refusals, or a turn that never ends (6 calls max) **pause the match**. A
 panel explains what happened, with Retry and Skip turn. A unit without an order also pauses

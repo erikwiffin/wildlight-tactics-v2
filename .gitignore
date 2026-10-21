@@ -7,3 +7,4 @@ sim-report.txt
 .env.*
 !.env.example
 live-report.txt
+inspect-report.txt
