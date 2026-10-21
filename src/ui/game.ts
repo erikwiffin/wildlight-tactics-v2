@@ -522,7 +522,7 @@ export class GameScreen {
         <button data-a="quit">Quit to title</button>
       </div>
       <button data-a="close" class="primary">Resume</button>`, {
-      copy: () => void navigator.clipboard?.writeText(this.replayCode()),
+      copy: () => copyText(this.replayCode()),
       quit: () => { close(); this.opts.onExit('title'); },
       close: () => close(),
     });
@@ -546,7 +546,7 @@ export class GameScreen {
         <button data-a="roster">Change team</button>
       </div>
       <button data-a="rematch" class="primary">Rematch</button>`, {
-      copy: () => void navigator.clipboard?.writeText(this.replayCode()),
+      copy: () => copyText(this.replayCode()),
       roster: () => { close(); this.opts.onExit('roster'); },
       rematch: () => { close(); this.opts.onExit('rematch'); },
     });
@@ -577,4 +577,15 @@ function unitCard(u: Unit, state: GameState): HTMLElement {
     </div>
     ${statuses ? `<div class="statuses">${statuses}</div>` : ''}`;
   return card;
+}
+
+/** Copy to clipboard; if that's refused, select the code so it can be copied by hand. */
+function copyText(text: string): void {
+  const fallback = () => {
+    const ta = document.querySelector<HTMLTextAreaElement>('.modal textarea');
+    ta?.focus();
+    ta?.select();
+  };
+  if (!navigator.clipboard) return fallback();
+  navigator.clipboard.writeText(text).catch(fallback);
 }

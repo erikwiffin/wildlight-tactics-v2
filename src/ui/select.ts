@@ -67,7 +67,9 @@ export function showSelect(
           close();
           onReplay(r);
         } catch {
-          alert('That replay code could not be read.');
+          const ta = document.querySelector('.modal textarea') as HTMLTextAreaElement;
+          ta.value = '';
+          ta.placeholder = 'That code could not be read. Paste the full replay code from the Menu or end screen.';
         }
       },
     });
