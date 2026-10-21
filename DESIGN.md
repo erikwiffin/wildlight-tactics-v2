@@ -191,6 +191,47 @@ seed picks one.
     import a code someone shared.
   - Codes from an older `RULES_VERSION` are flagged as possibly not replaying.
 
+## Orders mode: the Claude auto-battler
+
+In this mode the player gives each unit a **standing order** in natural language instead of
+direct commands. Orders can be typed or dictated with the browser's speech recognition, and
+they can be edited at any time.
+
+### The agent's turn
+- On each of the player's turns, a fresh Claude Haiku 5.5 conversation gets:
+  - a briefing: board, score, Beacons, turn bar, recent events, this unit's order,
+    **every teammate's order** (so units coordinate), and this unit's options
+  - four tools: `check_position`, `move`, `use_ability`, `end_turn(facing, report)`
+- The loop stops as soon as `end_turn` runs. A turn is usually one API call: move, act and end
+  in a single reply. The `report` sentence goes to the feed.
+- The scripted AI plays the enemy.
+- Settings: effort `low`, the system prompt is cached, tools use `strict` schemas.
+
+### Same access as the player
+The briefing and tools are built only from what the screen shows (`src/agent/context.ts`):
+- unit cards (cooldowns only for your own team, as in the ability list)
+- the turn bar
+- reachable hexes, plus targets with hit % and damage previews
+- line-of-sight greys
+
+`check_position` is equivalent to moving, looking and pressing Undo. Moving uses no randomness.
+
+Legality is checked with the same target query the tap UI uses, so nothing is resolved ahead
+of time. The agent never touches the RNG state, the scripted AI, or the enemy's plans.
+
+### Failures
+API errors, timeouts, refusals, or a turn that never ends (6 calls max) **pause the match**. A
+panel explains what happened, with Retry and Skip turn. A unit without an order also pauses
+the match and asks for one.
+
+### Replays
+Replays still work unchanged, because the actions the agent chose are logged like any other.
+
+### Measured
+In live runs, after the first (cache-writing) call, turns take about 2.5–5 s, almost always in
+one API call. 8 turns used about 14k input tokens (11k of them cache reads) and 4k output
+tokens.
+
 ## Auto-zoom
 
 At the start of each turn, the camera frames the active unit's move and attack range (an

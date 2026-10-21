@@ -17,6 +17,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body {
   margin: 0;
   height: 100%;
@@ -294,6 +295,43 @@ button.danger { color: var(--danger); border-color: var(--danger); }
 .lib-empty { text-align: center; padding: 40px 16px; border: 1px dashed var(--line); border-radius: var(--radius); }
 .lib-empty h3 { margin: 0 0 6px; }
 .modal .btns { grid-template-columns: 1fr 1fr; }
+
+/* ---------- Orders mode ---------- */
+.panel-head { position: sticky; top: -10px; z-index: 2; margin: -10px -12px 0; padding: 10px 12px 8px; background: var(--panel); display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--line); }
+.agent-bar { display: flex; align-items: center; gap: 10px; }
+.agent-status { flex: 1; font-weight: 700; min-width: 0; }
+.agent-status.busy::before { content: ''; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--nanite); margin-right: 8px; animation: pulse 1s ease-in-out infinite; vertical-align: middle; }
+@keyframes pulse { 50% { opacity: 0.25; } }
+.agent-bar button { min-width: 96px; }
+.agent-alert { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel-2); font-size: 13px; display: flex; flex-direction: column; gap: 8px; }
+.agent-alert.error { border-color: var(--danger); }
+.alert-btns { display: flex; gap: 8px; }
+.alert-btns button { flex: 1; }
+.tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px; background: var(--bg); border-radius: 10px; }
+.tabs button { min-height: 36px; border: none; background: transparent; font-weight: 700; color: var(--muted); }
+.tabs button[aria-selected="true"] { background: var(--panel-2); color: var(--text); }
+.orders-pane { display: flex; flex-direction: column; gap: 10px; }
+.order-row { display: flex; flex-direction: column; gap: 4px; }
+.order-row.ko { opacity: 0.4; }
+.order-row.active .order-input { border-color: var(--nanite); }
+.order-label { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 13px; }
+.order-label small { color: var(--muted); font-weight: 600; text-transform: capitalize; }
+.order-label .mono { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; font-size: 10px; font-weight: 900; border: 2px solid var(--t0); color: var(--t0); }
+.order-field { display: flex; gap: 6px; align-items: stretch; }
+.order-input {
+  flex: 1; min-width: 0; resize: vertical; min-height: 52px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--text); padding: 8px 10px; font: inherit; font-size: 14px; -webkit-user-select: text; user-select: text;
+}
+.mic-btn { min-width: var(--tap); padding: 0; font-size: 18px; }
+.mic-btn.listening { background: var(--danger); border-color: var(--danger); animation: pulse 1.2s ease-in-out infinite; }
+button.small { min-height: 36px; font-size: 13px; align-self: flex-start; }
+.feed-pane { display: flex; flex-direction: column; gap: 4px; max-height: 32dvh; overflow-y: auto; font-size: 13px; }
+.feed-line { padding: 4px 8px; border-radius: 6px; overflow-wrap: anywhere; }
+.feed-line.report { background: var(--panel-2); color: var(--text); font-weight: 600; border-left: 3px solid var(--t0); }
+.feed-line.step { color: var(--muted); padding-left: 14px; }
+.feed-line.enemy { color: #ffb48f; }
+.feed-line.system { color: var(--gold); }
+.feed-line.error { color: var(--danger); }
 
 /* Landscape: queue on the left, panel on the right. Kept last so it wins over base rules. */
 @media (orientation: landscape) and (min-aspect-ratio: 5/4) {

@@ -3,6 +3,7 @@
 import { MAPS } from '../core/map';
 import { decodeReplay, type Replay } from '../core/replay';
 import { el, esc, modal } from './dom';
+import { micButton } from './speech';
 import { cap, copyText } from './match';
 import { deleteMatch, isCurrentRules, loadLibrary, renameMatch, type SavedMatch } from './store';
 
@@ -85,7 +86,19 @@ export function showLibrary(host: HTMLElement, onWatch: (r: Replay) => void, onB
       };
       input.onkeydown = (e) => e.key === 'Enter' && save();
       input.onblur = save;
-      name.replaceWith(input);
+      const wrap = el('div', 'order-field');
+      wrap.append(input);
+      const mic = micButton(input);
+      if (mic) {
+        // Keep the field open while dictating; save when dictation ends or on Enter.
+        input.onblur = null;
+        mic.addEventListener('pointerdown', (e) => e.preventDefault());
+        wrap.append(mic);
+        const done = el('button', 'primary', 'Save');
+        done.onclick = save;
+        wrap.append(done);
+      }
+      name.replaceWith(wrap);
       input.focus();
       input.select();
     };

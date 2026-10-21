@@ -87,6 +87,8 @@ export const isCurrentRules = (m: SavedMatch) => m.rulesVersion === RULES_VERSIO
 
 export interface Prefs {
   mode: 'play' | 'aivai';
+  /** In You vs AI: tap commands, or standing orders played by Claude. */
+  control: 'direct' | 'orders';
   mapId: string;
   picks: string[];
   enemy: StrategyId;
@@ -97,6 +99,7 @@ export interface Prefs {
 
 const DEFAULT_PREFS: Prefs = {
   mode: 'play',
+  control: 'direct',
   mapId: 'arena',
   picks: ['rhino', 'fox', 'moth', 'eel'],
   enemy: 'balanced',

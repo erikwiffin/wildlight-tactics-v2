@@ -5,6 +5,7 @@ import { hexKey } from '../core/hex';
 import { MAP_LIST, MAPS } from '../core/map';
 import { MONSTER_BY_ID, MONSTERS } from '../core/monsters';
 import type { MapDef, StrategyId } from '../core/types';
+import { agentAvailable } from '../agent/agent';
 import { el, esc } from './dom';
 import { loadPrefs, savePrefs, type Prefs } from './store';
 
@@ -66,6 +67,33 @@ export function showSetup(host: HTMLElement, onStart: (r: SetupResult) => void, 
   });
   mapSection.append(mapGrid);
 
+  // Control (You vs AI only)
+  const controlSection = section('How you play');
+  const controlRow = el('div', 'chips');
+  const controlHint = el('p', 'hint');
+  const agent = { ok: false, reason: 'Checking for the Claude agent…' };
+  const controlBtns = (
+    [
+      ['direct', 'Tap commands', 'You move and act with every unit yourself.'],
+      ['orders', 'Give orders (Claude)', 'Write or say a standing order per unit; Claude Haiku plays your turns.'],
+    ] as const
+  ).map(([id, label, desc]) => {
+    const b = el('button', 'chip-btn', label);
+    b.title = desc;
+    b.onclick = () => {
+      prefs.control = id;
+      refresh();
+    };
+    controlRow.append(b);
+    return { b, id, desc };
+  });
+  controlSection.append(controlRow, controlHint);
+  void agentAvailable().then((r) => {
+    agent.ok = r.ok;
+    agent.reason = r.reason ?? '';
+    refresh();
+  });
+
   // AI styles
   const styleSection = section('AI style');
   const styleHost = el('div', 'styles');
@@ -123,7 +151,7 @@ export function showSetup(host: HTMLElement, onStart: (r: SetupResult) => void, 
   seedRow.append(seedInput, reroll);
   bar.append(seedRow, libBtn, start);
 
-  screen.append(modeRow, mapSection, styleSection, teamSection, bar);
+  screen.append(modeRow, mapSection, controlSection, styleSection, teamSection, bar);
   host.replaceChildren(screen);
 
   function styleRow(label: string, value: StrategyId, set: (s: StrategyId) => void): HTMLElement {
@@ -159,6 +187,15 @@ export function showSetup(host: HTMLElement, onStart: (r: SetupResult) => void, 
       );
     }
     const play = prefs.mode === 'play';
+    controlSection.hidden = !play;
+    for (const { b, id } of controlBtns) {
+      b.setAttribute('aria-pressed', String(prefs.control === id));
+      if (id === 'orders') b.disabled = !agent.ok;
+    }
+    const ordersBlocked = prefs.control === 'orders' && !agent.ok;
+    controlHint.textContent = ordersBlocked
+      ? `Orders mode is unavailable: ${agent.reason}`
+      : controlBtns.find((c) => c.id === prefs.control)!.desc + (agent.ok ? '' : ` Orders mode needs the local dev server with an API key (${agent.reason}).`);
     teamSection.querySelector('.section-title')!.textContent = play ? 'Your team' : 'Teams';
     roster.hidden = !play;
     teamHint.hidden = !play;
@@ -179,7 +216,7 @@ export function showSetup(host: HTMLElement, onStart: (r: SetupResult) => void, 
         teamLine('Orange drafts', 't1', aiTeam(seed, prefs.orange, map.teamSize, '1'));
     }
     const need = map.teamSize - prefs.picks.length;
-    start.disabled = play && need !== 0;
+    start.disabled = (play && need !== 0) || (play && ordersBlocked);
     start.textContent = !play ? 'Watch match' : need === 0 ? 'Fight' : `Pick ${need} more`;
   }
   refresh();

@@ -118,15 +118,16 @@ export abstract class MatchScreen {
     this.view.clearHighlights();
   }
 
-  protected async commit(a: Action): Promise<void> {
+  protected async commit(a: Action): Promise<GameEvent[]> {
     const before = structuredClone(this.state);
     const events = applyAction(this.state, a);
     this.log.push(a);
     await this.play(events, before);
-    if (this.disposed) return;
+    if (this.disposed) return events;
     this.view.sync(this.state);
     this.renderHud();
     if (events.some((e) => e.type === 'turnStart')) this.frameActive();
+    return events;
   }
 
   protected async play(events: GameEvent[], before: GameState): Promise<void> {

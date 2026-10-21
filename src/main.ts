@@ -5,6 +5,7 @@ import { MAPS } from './core/map';
 import type { Replay } from './core/replay';
 import { ActionSource } from './sim';
 import { showLibrary } from './ui/library';
+import { OrdersScreen } from './ui/orders';
 import { PlayScreen, type PlayExit } from './ui/play';
 import { randomSeed, showSetup, type SetupResult } from './ui/setup';
 import { WatchScreen } from './ui/watch';
@@ -36,7 +37,7 @@ function start(r: SetupResult): void {
   const size = MAPS[prefs.mapId].teamSize;
   if (prefs.mode === 'play') {
     const config = newConfig(seed, [prefs.picks, aiTeam(seed, prefs.enemy, size, '1')], prefs.mapId, [null, prefs.enemy]);
-    const game = new PlayScreen(app, config, onPlayExit);
+    const game = prefs.control === 'orders' ? new OrdersScreen(app, config, onPlayExit) : new PlayScreen(app, config, onPlayExit);
     screen = game;
     if (debug) (window as unknown as { wl: unknown }).wl = game.debug();
   } else {
