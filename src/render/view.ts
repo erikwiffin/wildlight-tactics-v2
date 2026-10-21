@@ -19,7 +19,7 @@ export function hexToWorld(h: Hex): THREE.Vector3 {
 }
 const topY = (h: number) => BASE_Y + h * LEVEL;
 
-export type HighlightKind = 'move' | 'target' | 'area' | 'danger' | 'facing' | 'select';
+export type HighlightKind = 'move' | 'target' | 'area' | 'danger' | 'facing' | 'select' | 'blocked';
 const HL_COLORS: Record<HighlightKind, number> = {
   move: 0x3aa0ff,
   target: 0xffd23a,
@@ -27,6 +27,7 @@ const HL_COLORS: Record<HighlightKind, number> = {
   danger: 0xff4d6d,
   facing: 0x7dffb0,
   select: 0xffffff,
+  blocked: 0x7c8296,
 };
 
 interface Tween {
@@ -54,6 +55,8 @@ export class BoardView {
   readonly scene = new THREE.Scene();
   readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
   onTap: (hex: Hex | null) => void = () => {};
+  /** Animation speed multiplier (spectator fast-forward). */
+  speed = 1;
 
   private container: HTMLElement;
   private overlay: HTMLDivElement;
@@ -89,7 +92,7 @@ export class BoardView {
     container.appendChild(this.overlay);
 
     const map = getMap(this.mapId).def;
-    this.boardRadius = (map.radius + 0.8) * SQRT3;
+    this.boardRadius = Math.max(...map.tiles.map((t) => hexToWorld(t).length())) + 1.1;
     this.buildLights();
     this.buildBoard();
     this.scene.add(this.hazardGroup);
@@ -133,6 +136,7 @@ export class BoardView {
     const sideMat = new THREE.MeshStandardMaterial({ color: 0x3a3226, roughness: 0.95 });
     const roughTop = new THREE.MeshStandardMaterial({ color: 0x7a5a3a, roughness: 1 });
     const rockMat = new THREE.MeshStandardMaterial({ color: 0x45434d, roughness: 0.9, flatShading: true });
+    const lavaMat = new THREE.MeshStandardMaterial({ color: 0x5a1a08, emissive: 0xff5a1f, emissiveIntensity: 0.9, roughness: 0.6 });
     const topMats = topColors.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.9 }));
     const hlGeo = new THREE.CircleGeometry(0.9, 6);
     hlGeo.rotateX(-Math.PI / 2);
@@ -140,11 +144,11 @@ export class BoardView {
 
     for (const t of map.tiles) {
       const k = hexKey(t);
-      const top = topY(t.h);
+      const top = t.terrain === 'void' ? -0.35 : topY(t.h);
       const height = top + 1;
       const geo = new THREE.CylinderGeometry(0.97, 0.97, height, 6, 1);
       // CylinderGeometry's first vertex sits on +z, which is already pointy-top.
-      const topMat = t.terrain === 'rough' ? roughTop : topMats[Math.min(t.h, 3)];
+      const topMat = t.terrain === 'void' ? lavaMat : t.terrain === 'rough' ? roughTop : topMats[Math.min(t.h, 3)];
       const mesh = new THREE.Mesh(geo, [sideMat, topMat, sideMat]);
       const p = hexToWorld(t);
       mesh.position.set(p.x, top - height / 2, p.z);
@@ -154,6 +158,7 @@ export class BoardView {
       this.scene.add(mesh);
       this.tileMeshes.set(k, mesh);
       this.tileHeights.set(k, t.h);
+      if (t.terrain === 'void') mesh.castShadow = false;
 
       if (t.terrain === 'blocked') {
         const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(0.75, 0), rockMat);
@@ -259,6 +264,12 @@ export class BoardView {
         v.alive = false;
         continue;
       }
+      // Scrubbing backwards can bring a unit back.
+      v.root.visible = true;
+      v.root.scale.setScalar(1);
+      v.root.rotation.y = 0;
+      v.label.style.display = '';
+      v.alive = true;
       this.placeUnit(u.id, u.pos);
       this.setFacing(u.id, u.facing);
       v.hpFill.style.width = `${(100 * u.hp) / u.maxHp}%`;
@@ -333,7 +344,7 @@ export class BoardView {
       const hl = this.highlights.get(hexKey(h));
       if (!hl) continue;
       (hl.material as THREE.MeshBasicMaterial).color.setHex(HL_COLORS[kind]);
-      (hl.material as THREE.MeshBasicMaterial).opacity = kind === 'area' || kind === 'select' ? 0.65 : 0.5;
+      (hl.material as THREE.MeshBasicMaterial).opacity = kind === 'area' || kind === 'select' ? 0.65 : kind === 'blocked' ? 0.4 : 0.5;
       hl.visible = true;
     }
   }
@@ -383,7 +394,7 @@ export class BoardView {
 
   private tween(dur: number, step: (k: number) => void): Promise<void> {
     return new Promise((resolve) => {
-      this.tweens.push({ start: performance.now(), dur, step, done: resolve });
+      this.tweens.push({ start: performance.now(), dur: dur / this.speed, step, done: resolve });
     });
   }
 
@@ -485,19 +496,6 @@ export class BoardView {
     });
   }
 
-  /** Center the camera on a hex (used when a turn starts off-screen). */
-  focus(h: Hex): void {
-    const target = this.unitWorld(h).setY(0);
-    const from = this.pan.clone();
-    const maxPan = this.boardRadius * 0.6;
-    target.clampLength(0, maxPan);
-    if (this.zoom <= 1.05) return; // whole board already visible
-    this.tween(300, (k) => {
-      this.pan.lerpVectors(from, target, k);
-      this.updateCamera();
-    });
-  }
-
   private resize(): void {
     const w = this.container.clientWidth || 1;
     const h = this.container.clientHeight || 1;
@@ -505,14 +503,73 @@ export class BoardView {
     this.updateCamera();
   }
 
+  /** Half the view height (world units) that fits the whole board at zoom 1. */
+  private baseHalfH(): number {
+    const aspect = (this.container.clientWidth || 1) / (this.container.clientHeight || 1);
+    // Portrait screens are width-limited, so look down more steeply to make hexes taller.
+    this.elevation = THREE.MathUtils.degToRad(aspect < 0.9 ? 55 : 38);
+    const R = this.boardRadius;
+    return Math.max(R * Math.sin(this.elevation) + 1.2, (R + 0.3) / aspect);
+  }
+
+  /**
+   * Pan and zoom so these hexes fill the view (auto-zoom). Falls back to the
+   * whole board when they nearly cover it anyway.
+   */
+  frameHexes(hexes: Hex[]): void {
+    if (!hexes.length) return;
+    const halfH0 = this.baseHalfH();
+    const aspect = (this.container.clientWidth || 1) / (this.container.clientHeight || 1);
+    const sinE = Math.sin(this.elevation);
+    const cosE = Math.cos(this.elevation);
+    const right = new THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
+    const toward = new THREE.Vector3(Math.sin(this.yaw), 0, Math.cos(this.yaw));
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const h of hexes) {
+      const p = this.unitWorld(h);
+      const sx = p.x * right.x + p.z * right.z;
+      const sy = -(p.x * toward.x + p.z * toward.z) * sinE + p.y * cosE;
+      x0 = Math.min(x0, sx - 1.1);
+      x1 = Math.max(x1, sx + 1.1);
+      y0 = Math.min(y0, sy - 1.8); // extra room for the board buttons
+      y1 = Math.max(y1, sy + 2.2 * cosE + 0.9); // room for models and HP bars
+    }
+    const cx = (x0 + x1) / 2;
+    const cy = (y0 + y1) / 2;
+    let zoom = Math.min(halfH0 / ((y1 - y0) / 2), (halfH0 * aspect) / ((x1 - x0) / 2));
+    zoom = THREE.MathUtils.clamp(zoom, 1, 2.2);
+    const targetPan = new THREE.Vector3();
+    if (zoom >= 1.12) {
+      const b = (0.6 * cosE - cy) / sinE;
+      targetPan.copy(right).multiplyScalar(cx).addScaledVector(toward, b);
+      targetPan.y = 0;
+    } else zoom = 1;
+    const fromPan = this.pan.clone();
+    const fromZoom = this.zoom;
+    this.tween(380, (k) => {
+      const e = 1 - (1 - k) * (1 - k);
+      this.pan.lerpVectors(fromPan, targetPan, e);
+      this.zoom = fromZoom + (zoom - fromZoom) * e;
+      this.updateCamera();
+    });
+  }
+
+  /** Zoom back out to the whole board. */
+  frameAll(): void {
+    const fromPan = this.pan.clone();
+    const fromZoom = this.zoom;
+    this.tween(300, (k) => {
+      this.pan.lerpVectors(fromPan, new THREE.Vector3(), k);
+      this.zoom = fromZoom + (1 - fromZoom) * k;
+      this.updateCamera();
+    });
+  }
+
   private updateCamera(): void {
     const w = this.container.clientWidth || 1;
     const h = this.container.clientHeight || 1;
     const aspect = w / h;
-    // Portrait screens are width-limited, so look down more steeply to make hexes taller.
-    this.elevation = THREE.MathUtils.degToRad(aspect < 0.9 ? 55 : 38);
-    const R = this.boardRadius;
-    const halfH = Math.max(R * Math.sin(this.elevation) + 1.2, (R + 0.3) / aspect) / this.zoom;
+    const halfH = this.baseHalfH() / this.zoom;
     const cam = this.camera;
     cam.left = -halfH * aspect;
     cam.right = halfH * aspect;

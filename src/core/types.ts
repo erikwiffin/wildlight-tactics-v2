@@ -2,7 +2,8 @@ import type { Dir, Hex } from './hex';
 import type { RngState } from './rng';
 
 export type TeamId = 0 | 1;
-export type Terrain = 'normal' | 'rough' | 'blocked';
+/** blocked = rock (impassable, blocks sight); void = pit/lava (impassable, open sight). */
+export type Terrain = 'normal' | 'rough' | 'blocked' | 'void';
 
 export interface Tile {
   q: number;
@@ -14,7 +15,9 @@ export interface Tile {
 export interface MapDef {
   id: string;
   name: string;
-  radius: number;
+  blurb: string;
+  teamSize: number;
+  scoreToWin: number;
   tiles: Tile[];
   beacons: Hex[];
   spawns: [Hex[], Hex[]];
@@ -71,6 +74,8 @@ export interface AbilityDef {
   chargeSpeed?: number;
   /** Ability needs a unit (any team) on the targeted hex. */
   needsUnitTarget?: boolean;
+  /** Direct shot: needs a clear line of sight (terrain and units block). */
+  los?: boolean;
   /** Ability needs the targeted hex to be empty. */
   needsEmptyTarget?: boolean;
   effects: Effect[];
@@ -134,11 +139,15 @@ export interface TurnState {
   acted: boolean;
 }
 
+export type StrategyId = 'balanced' | 'aggressive' | 'defensive' | 'objective';
+
 export interface MatchConfig {
   rulesVersion: number;
   seed: string;
   mapId: string;
   teams: [string[], string[]];
+  /** Who controls each side: an AI strategy, or null for a human. Metadata only; rules ignore it. */
+  ai?: [StrategyId | null, StrategyId | null];
 }
 
 export interface GameState {

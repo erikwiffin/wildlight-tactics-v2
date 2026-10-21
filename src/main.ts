@@ -1,36 +1,68 @@
 import './style.css';
 import { aiTeam } from './core/ai';
 import { newConfig } from './core/engine';
+import { MAPS } from './core/map';
 import type { Replay } from './core/replay';
-import { GameScreen } from './ui/game';
-import { randomSeed, showSelect } from './ui/select';
+import { ActionSource } from './sim';
+import { showLibrary } from './ui/library';
+import { PlayScreen, type PlayExit } from './ui/play';
+import { randomSeed, showSetup, type SetupResult } from './ui/setup';
+import { WatchScreen } from './ui/watch';
 
 const app = document.getElementById('app')!;
-let game: GameScreen | null = null;
-let lastTeam: string[] = ['rhino', 'fox', 'moth', 'eel'];
+let screen: { dispose(): void } | null = null;
+let last: SetupResult | null = null;
+const debug = new URLSearchParams(location.search).has('debug');
 
-function title(): void {
-  game?.dispose();
-  game = null;
-  showSelect(app, lastTeam, startMatch, watch);
+function clear(): void {
+  screen?.dispose();
+  screen = null;
 }
 
-function startMatch(team: string[], seed: string): void {
-  lastTeam = team;
-  game?.dispose();
-  const config = newConfig(seed, [team, aiTeam(seed, team)]);
-  game = new GameScreen(app, { config, onExit });
-  if (new URLSearchParams(location.search).has('debug')) (window as unknown as { wl: unknown }).wl = game.debug();
+function setup(): void {
+  clear();
+  showSetup(app, start, library);
 }
 
-function watch(r: Replay): void {
-  game?.dispose();
-  game = new GameScreen(app, { config: r.config, replay: r, onExit });
+function library(): void {
+  clear();
+  showLibrary(app, (r) => watch(r, 'Back to library', library), setup);
 }
 
-function onExit(next: 'rematch' | 'roster' | 'title'): void {
-  if (next === 'rematch') startMatch(lastTeam, randomSeed());
-  else title();
+function start(r: SetupResult): void {
+  last = r;
+  clear();
+  const { prefs, seed } = r;
+  const size = MAPS[prefs.mapId].teamSize;
+  if (prefs.mode === 'play') {
+    const config = newConfig(seed, [prefs.picks, aiTeam(seed, prefs.enemy, size, '1')], prefs.mapId, [null, prefs.enemy]);
+    const game = new PlayScreen(app, config, onPlayExit);
+    screen = game;
+    if (debug) (window as unknown as { wl: unknown }).wl = game.debug();
+  } else {
+    const config = newConfig(
+      seed,
+      [aiTeam(seed, prefs.blue, size, '0'), aiTeam(seed, prefs.orange, size, '1')],
+      prefs.mapId,
+      [prefs.blue, prefs.orange],
+    );
+    const w = new WatchScreen(app, ActionSource.simulate(config), { live: true, exitLabel: 'Exit to setup', onExit: setup });
+    screen = w;
+    if (debug) (window as unknown as { wl: unknown }).wl = w;
+  }
 }
 
-title();
+function watch(r: Replay, exitLabel: string, onExit: () => void): void {
+  clear();
+  const w = new WatchScreen(app, new ActionSource(r.config, r.actions), { live: false, exitLabel, onExit });
+  screen = w;
+  if (debug) (window as unknown as { wl: unknown }).wl = w;
+}
+
+function onPlayExit(e: PlayExit): void {
+  if (e.to === 'rematch' && last) start({ ...last, seed: randomSeed() });
+  else if (e.to === 'watch') watch(e.replay, 'Back to setup', setup);
+  else setup();
+}
+
+setup();

@@ -1,7 +1,7 @@
-# Wildlight Tactics: MVP Design (v0.2)
+# Wildlight Tactics: MVP Design (v0.3)
 
-A mobile-first, FFT-style tactics game. Two teams of four nanite-infected animals
-fight on a hex arena for control of three Beacons.
+A mobile-first, FFT-style tactics game. Two teams of nanite-infected animals fight
+on hex arenas for control of the Beacons.
 
 ## Pillars
 
@@ -21,13 +21,29 @@ and holding them feeds your swarm.
 
 | | |
 |---|---|
-| Teams | 4v4, player vs AI. The player picks 4 of 7. |
-| Board | Hexagon arena, radius 6 (127 hexes), pointy-top, tile heights 0–3, point-symmetric |
-| Win | First to **15** points, or KO the whole enemy team |
+| Teams | Player vs AI, or AI vs AI (spectated). Team size is set by the map (3–5), picked from a roster of 7. |
+| Win | Reach the map's score target, or KO the whole enemy team |
 | Scoring | The **Pulse** fires on a fixed rhythm and gives +1 per Beacon held |
 | Capture | End your turn on a Beacon with no enemy adjacent. It stays yours until flipped. |
 | KO | Permanent for the match. No respawns, no comeback mechanic. |
 | Turn limit | After 40 Pulses the higher score wins, and equal scores are a draw |
+
+### Maps
+
+All maps are point-symmetric, so (q, r) mirrors to (−q, −r). Spawns, facings and Beacons
+mirror too, so neither side is favored.
+
+| Map | Shape | Team size | Beacons | Score target | Character |
+|---|---|---|---|---|---|
+| Glass Hollow | hexagon, radius 4 (61 hexes) | 3v3 | 2 | 10 | A duel map. Two flank Beacons and a rock spine that breaks sight lines. |
+| Shattered Basin | hexagon, radius 6 (127 hexes) | 4v4 | 3 | 15 | The standard map: home Beacons and a raised center |
+| Caldera | ring, radius 7, lava core | 4v4 | 4 | 15 | You can shoot across the lava, but you have to walk around it |
+| Fault Lines | 13-wide rectangle (188 hexes) | 5v5 | 5 | 20 | Three lanes split by rock ridges |
+
+**Terrain:**
+- Normal costs 1 movement and Rough costs 2.
+- **Rock** is impassable and blocks sight.
+- **Lava** (Caldera's void) is impassable but doesn't block sight.
 
 ### Turn order (CT)
 - Each unit gains CT by its Speed every tick and acts at 100.
@@ -63,6 +79,23 @@ and holding them feeds your swarm.
   multipliers. The minimum is 1.
 - **Hit chance:** shown as a percentage and stored as basis points (8500 = 85%).
   The roll comes from the match's seeded RNG.
+
+### Line of sight
+- **Direct shots** need a clear line from the attacker to the target: Sting Dust, Zap,
+  Static Snare, Lash, Tentacle Pull and Nanite Jam.
+- **What blocks the line:**
+  - rock
+  - any tile 2+ levels higher than *both* ends (a wall)
+  - **any unit, ally or enemy**, so the tank really is a shield for the backline
+- **Lines along a hex edge** count as clear if either side is clear.
+- **Exempt:**
+  - Melee, which means adjacent targets
+  - Arcing and area abilities: Quill Volley, Storm Call, Ink Cloud, Spike Field
+  - Leaps: Phase Strike, Pounce
+  - Ally support: heals and buffs
+- **Arc Lance** pierces units but stops at rock and walls.
+- **In the UI,** targets in range but out of sight show as grey hexes, and tapping one
+  says "No line of sight".
 
 ### Statuses
 | Status | Effect | What ends it |
@@ -107,7 +140,8 @@ All ability data lives in `src/core/monsters.ts`, and tuning it doesn't touch an
 - **The AI never peeks.** It plans on `previewAbility` expected values, which use no RNG.
   The same state always produces the same AI action.
 - **Undo** is a state rollback of a move, which uses no RNG, so it can't be used to re-roll.
-- **Replays** are `{config, actions}` packed into a base64 share code.
+- **Replays** are `{config, actions}` packed into a base64 share code. `config.ai` records who
+  controlled each side. It's metadata only, since replays never need to re-run the AI.
   - `tests/determinism.test.ts` checks four things:
     - A match replays to an identical state hash.
     - The share code round-trips.
@@ -120,13 +154,49 @@ All ability data lives in `src/core/monsters.ts`, and tuning it doesn't touch an
 The AI uses a greedy one-turn lookahead.
 1. It enumerates every move and act combination (in either order) and every stay-and-act
    option.
-2. It scores each one as the sum of these:
-   - expected damage, plus a bonus for likely KOs and for pushing enemies off Beacons
-   - heals and buffs, but only when they'd matter
-   - capturing or holding a Beacon, and distance to unheld Beacons
-   - threat exposure, weighted by role and current HP
+2. It scores each one as a sum of terms: expected damage, likely KOs, crowd control, heals
+   and buffs, Beacon capture and hold, distance to Beacons, approach, guarding, cohesion,
+   and threat exposure.
 3. Facing is chosen to keep enemies out of the flanks and rear.
-4. Difficulty levels can come later through weights and deterministic noise.
+
+**Strategies** are weight sets over those same terms (`WEIGHTS` in `src/core/ai.ts`). You pick
+one per AI side at setup.
+
+| Strategy | Plays like | Drafts |
+|---|---|---|
+| Balanced | Takes Beacons and trades when the trade is good | mixed |
+| Aggressive | Big damage and KO weights, chases enemies, ignores risk | Lynx, Fox, Eel… |
+| Defensive | Holds and guards its own Beacons, stays grouped, values heals and crowd control, avoids exposure | Rhino, Moth, Porcupine… |
+| Objective | Races to Beacons and avoids fights it doesn't need | Fox, Rhino, Moth… |
+
+**Drafts** are deterministic from the seed: each strategy has two preference lists, and the
+seed picks one.
+
+## Spectating and the match library
+
+- **AI vs AI:** pick a map and a strategy for each side.
+  - The whole match is simulated in a Web Worker. It's inlined as a blob, so it also works
+    in the single-file build, and falls back to time-sliced main-thread play if workers are
+    unavailable.
+  - Actions stream into the player while the match is still being computed.
+- **Playback:**
+  - play/pause (Space on desktop), 1×/2×/4× speed, step one action, restart, skip to end
+  - a **timeline scrubber**: any point is rebuilt exactly by replaying the log up to it,
+    and KO'd units come back when you scrub backwards
+- **Library:**
+  - Every finished match is saved automatically: yours, AI vs AI, and unfinished ones you
+    quit.
+  - Matches live in browser storage, up to 60.
+  - Each entry has Watch, Copy code, Rename (inline) and Delete (tap twice). You can also
+    import a code someone shared.
+  - Codes from an older `RULES_VERSION` are flagged as possibly not replaying.
+
+## Auto-zoom
+
+At the start of each turn, the camera frames the active unit's move and attack range (an
+orthographic fit in camera space, capped at 2.2× zoom). It shows the whole board when the
+frame would barely be zoomed anyway. The **Auto zoom** button toggles it, and the setting is
+remembered. Pinch, pan and rotate still work as before.
 
 ## Client
 
@@ -144,8 +214,8 @@ The AI uses a greedy one-turn lookahead.
 
 ## Out of scope for the MVP
 
-Online play, progression, the draft phase, extra maps, real models and animation, audio,
-the campaign, and AI difficulty levels.
+Online play, progression, the draft phase, real models and animation, audio, the campaign,
+and AI difficulty levels.
 
 ## Tuning baseline (`npm run sim`, 24 AI-vs-AI games)
 

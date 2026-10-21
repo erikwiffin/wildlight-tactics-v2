@@ -8,6 +8,7 @@ import {
   hexDistance,
   hexEq,
   hexKey,
+  hexLine,
   hexScale,
   hexesInRadius,
   neighbor,
@@ -27,13 +28,14 @@ import type {
   MatchConfig,
   MonsterDef,
   StatusId,
+  StrategyId,
   TeamId,
   Tile,
   Unit,
 } from './types';
 
-export const RULES_VERSION = 1;
-export const SCORE_TO_WIN = 15;
+// v2: line of sight, per-map team size / score target, void terrain.
+export const RULES_VERSION = 2;
 export const PULSE_SPEED = 7;
 export const MAX_PULSES = 40;
 export const CT_FULL = 100;
@@ -46,6 +48,9 @@ export const DAMAGE_SCALE = 150;
 
 export function createMatch(config: MatchConfig): GameState {
   const map = getMap(config.mapId).def;
+  for (const team of config.teams) {
+    if (team.length !== map.teamSize) throw new Error(`${map.name} needs ${map.teamSize} monsters per team`);
+  }
   const units: Unit[] = [];
   const perTeam = Math.max(config.teams[0].length, config.teams[1].length);
   // Interleave ids (A0, B0, A1, B1, ...) so CT tie-breaks alternate between teams.
@@ -97,6 +102,8 @@ export function createMatch(config: MatchConfig): GameState {
 
 export const defOf = (u: Unit): MonsterDef => MONSTER_BY_ID[u.defId];
 
+export const scoreToWin = (state: GameState): number => getMap(state.config.mapId).def.scoreToWin;
+
 export function tileAt(state: GameState, h: Hex): Tile | undefined {
   return getMap(state.config.mapId).tiles.get(hexKey(h));
 }
@@ -127,7 +134,30 @@ function enemyHazardAt(state: GameState, h: Hex, team: TeamId) {
 }
 
 function walkable(t: Tile | undefined): t is Tile {
-  return !!t && t.terrain !== 'blocked';
+  return !!t && t.terrain !== 'blocked' && t.terrain !== 'void';
+}
+
+/** Terrain that stops sight between hexes of heights hA and hB: rock, or a wall 2+ above both. */
+function blocksSight(t: Tile, hA: number, hB: number): boolean {
+  return t.terrain === 'blocked' || t.h >= Math.max(hA, hB) + 2;
+}
+
+/**
+ * Clear line of sight from `from` to `to`: no rock, no wall 2+ levels above
+ * both ends, and (unless ignoreUnits) no unit of either team in between.
+ * A line that runs exactly along hex edges is clear if either side is.
+ */
+export function hasLineOfSight(state: GameState, from: Hex, to: Hex, ignoreUnits = false): boolean {
+  const hA = tileAt(state, from)?.h ?? 0;
+  const hB = tileAt(state, to)?.h ?? 0;
+  const clear = (line: Hex[]) =>
+    line.slice(0, -1).every((h) => {
+      const t = tileAt(state, h);
+      if (!t) return true;
+      if (blocksSight(t, hA, hB)) return false;
+      return ignoreUnits || !unitAt(state, h);
+    });
+  return clear(hexLine(from, to, 1)) || clear(hexLine(from, to, -1));
 }
 
 export interface ReachNode {
@@ -221,8 +251,11 @@ function isOffensive(ab: AbilityDef): boolean {
   return ab.affects === 'enemies' || ab.affects === 'all';
 }
 
-/** Every hex this unit could legally target with the ability right now. */
-export function abilityTargets(state: GameState, u: Unit, abilityId: string): Hex[] {
+/**
+ * Every hex this unit could legally target with the ability right now.
+ * Targets that are only illegal because of line of sight go into `blocked`.
+ */
+export function abilityTargets(state: GameState, u: Unit, abilityId: string, blocked?: Hex[]): Hex[] {
   const ab = getAbility(u.defId, abilityId);
   if ((u.cooldowns[abilityId] ?? 0) > 0) return [];
   if (ab.affects === 'self') return [u.pos];
@@ -245,8 +278,12 @@ export function abilityTargets(state: GameState, u: Unit, abilityId: string): He
       if (ab.affects === 'allies' && occ.team !== u.team) continue;
       if (occ.team !== u.team && hasStatus(occ, 'camo') && dist > 1) continue;
     }
-    if (ab.affects === 'tiles' && t.terrain === 'blocked') continue;
+    if (ab.affects === 'tiles' && !walkable(t)) continue;
     if (ab.effects.some((e) => e.kind === 'leap') && !leapLanding(state, u, h)) continue;
+    if (ab.los && dist > 1 && !hasLineOfSight(state, u.pos, h)) {
+      blocked?.push(h);
+      continue;
+    }
     out.push(h);
   }
   return out;
@@ -259,9 +296,16 @@ export function abilityArea(state: GameState, ab: AbilityDef, from: Hex, target:
   if (area.shape === 'single') hexes = [target];
   else if (area.shape === 'radius') hexes = hexesInRadius(target, area.radius);
   else {
+    // Rays pierce units but stop at rock and at walls 2+ above the caster.
     const d = directionTo(from, target);
+    const h0 = tileAt(state, from)?.h ?? 0;
     hexes = [];
-    for (let i = 1; i <= area.length; i++) hexes.push(hexAdd(from, hexScale(DIRS[d], i)));
+    for (let i = 1; i <= area.length; i++) {
+      const h = hexAdd(from, hexScale(DIRS[d], i));
+      const t = tileAt(state, h);
+      if (!t || blocksSight(t, h0, h0)) break;
+      hexes.push(h);
+    }
   }
   return hexes.filter((h) => !!tileAt(state, h));
 }
@@ -577,7 +621,7 @@ function pulse(state: GameState, events: GameEvent[]): void {
   state.pulses++;
   events.push({ type: 'pulse', score: [...state.score], gained });
   const [a, b] = state.score;
-  if (Math.max(a, b) >= SCORE_TO_WIN && a !== b) setWinner(state, a > b ? 0 : 1, events);
+  if (Math.max(a, b) >= scoreToWin(state) && a !== b) setWinner(state, a > b ? 0 : 1, events);
   else if (state.pulses >= MAX_PULSES) setWinner(state, a === b ? 'draw' : a > b ? 0 : 1, events);
 }
 
@@ -739,6 +783,11 @@ function resolveAbility(state: GameState, caster: Unit, ab: AbilityDef, target: 
 export const aliveOn = (state: GameState, team: TeamId): Unit[] =>
   state.units.filter((u) => u.alive && u.team === team);
 
-export function newConfig(seed: string, teams: [string[], string[]], mapId = 'arena'): MatchConfig {
-  return { rulesVersion: RULES_VERSION, seed, mapId, teams };
+export function newConfig(
+  seed: string,
+  teams: [string[], string[]],
+  mapId = 'arena',
+  ai?: [StrategyId | null, StrategyId | null],
+): MatchConfig {
+  return ai ? { rulesVersion: RULES_VERSION, seed, mapId, teams, ai } : { rulesVersion: RULES_VERSION, seed, mapId, teams };
 }

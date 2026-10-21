@@ -91,7 +91,7 @@ export const MONSTERS: MonsterDef[] = [
       {
         id: 'dust', name: 'Sting Dust', desc: 'Short-range magic jab.',
         minRange: 1, maxRange: 3, area: { shape: 'single' }, affects: 'enemies', acc: 9000, cooldown: 0,
-        needsUnitTarget: true, effects: [{ kind: 'damage', stat: 'mag', power: 55 }],
+        los: true, needsUnitTarget: true, effects: [{ kind: 'damage', stat: 'mag', power: 55 }],
       },
       {
         id: 'mend', name: 'Mend', desc: 'Heals one ally.',
@@ -149,10 +149,10 @@ export const MONSTERS: MonsterDef[] = [
       {
         id: 'zap', name: 'Zap', desc: 'Ranged shock.',
         minRange: 2, maxRange: 4, area: { shape: 'single' }, affects: 'enemies', acc: 8500, cooldown: 0,
-        needsUnitTarget: true, effects: [{ kind: 'damage', stat: 'mag', power: 75 }],
+        los: true, needsUnitTarget: true, effects: [{ kind: 'damage', stat: 'mag', power: 75 }],
       },
       {
-        id: 'lance', name: 'Arc Lance', desc: 'Lightning pierces every enemy in a straight line of 5.',
+        id: 'lance', name: 'Arc Lance', desc: 'Lightning pierces every enemy in a straight line of 5. Rock and high walls stop it.',
         minRange: 1, maxRange: 1, area: { shape: 'ray', length: 5 }, affects: 'enemies', acc: 8500, cooldown: 2,
         effects: [{ kind: 'damage', stat: 'mag', power: 80 }],
       },
@@ -164,7 +164,7 @@ export const MONSTERS: MonsterDef[] = [
       {
         id: 'static', name: 'Static Snare', desc: 'Light shock that stuns the target, skipping their next turn.',
         minRange: 1, maxRange: 3, area: { shape: 'single' }, affects: 'enemies', acc: 7000, cooldown: 4,
-        needsUnitTarget: true, effects: [{ kind: 'damage', stat: 'mag', power: 35 }, { kind: 'status', status: 'stun', turns: 1 }],
+        los: true, needsUnitTarget: true, effects: [{ kind: 'damage', stat: 'mag', power: 35 }, { kind: 'status', status: 'stun', turns: 1 }],
       },
     ],
   },
@@ -206,12 +206,12 @@ export const MONSTERS: MonsterDef[] = [
       {
         id: 'lash', name: 'Lash', desc: 'Tentacle whip with reach 2.',
         minRange: 1, maxRange: 2, area: { shape: 'single' }, affects: 'enemies', acc: 9000, cooldown: 0,
-        needsUnitTarget: true, effects: [{ kind: 'damage', stat: 'atk', power: 90 }],
+        los: true, needsUnitTarget: true, effects: [{ kind: 'damage', stat: 'atk', power: 90 }],
       },
       {
         id: 'pull', name: 'Tentacle Pull', desc: 'Drags an enemy 2 hexes toward the octopus.',
         minRange: 2, maxRange: 4, area: { shape: 'single' }, affects: 'enemies', acc: 8500, cooldown: 2,
-        needsUnitTarget: true, effects: [{ kind: 'damage', stat: 'mag', power: 35 }, { kind: 'pull', dist: 2 }],
+        los: true, needsUnitTarget: true, effects: [{ kind: 'damage', stat: 'mag', power: 35 }, { kind: 'pull', dist: 2 }],
       },
       {
         id: 'ink', name: 'Ink Cloud', desc: 'Slows enemies in a radius for 2 turns.',
@@ -221,7 +221,7 @@ export const MONSTERS: MonsterDef[] = [
       {
         id: 'jam', name: 'Nanite Jam', desc: 'Scrambles a swarm: target loses 50 CT.',
         minRange: 1, maxRange: 3, area: { shape: 'single' }, affects: 'enemies', acc: 8000, cooldown: 3,
-        needsUnitTarget: true, effects: [{ kind: 'damage', stat: 'mag', power: 30 }, { kind: 'ctShift', amount: -50 }],
+        los: true, needsUnitTarget: true, effects: [{ kind: 'damage', stat: 'mag', power: 30 }, { kind: 'ctShift', amount: -50 }],
       },
     ],
   },

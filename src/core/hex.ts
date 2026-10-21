@@ -69,15 +69,18 @@ export const oppositeDir = (d: Dir): Dir => ((d + 3) % 6) as Dir;
 
 /**
  * Hexes on the straight line from a to b (excluding a), using integer cube
- * interpolation with a fixed nudge so results never depend on float rounding.
+ * interpolation. When the line runs exactly along a hex edge, `side` (+1/-1)
+ * picks which neighbor it passes through; the nudge is far larger than any
+ * float error, so results never depend on rounding.
  */
-export function hexLine(a: Hex, b: Hex): Hex[] {
+export function hexLine(a: Hex, b: Hex, side: 1 | -1 = 1): Hex[] {
   const n = hexDistance(a, b);
   const out: Hex[] = [];
   // Scale by 6n so every lerp lands on an integer, then round in cube space.
   const S = 6 * Math.max(n, 1);
-  const ax = a.q * S + 1, az = a.r * S + 1, ay = -a.q * S - a.r * S - 2;
-  const bx = b.q * S + 1, bz = b.r * S + 1, by = -b.q * S - b.r * S - 2;
+  const e = side;
+  const ax = a.q * S + e, az = a.r * S + e, ay = -a.q * S - a.r * S - 2 * e;
+  const bx = b.q * S + e, bz = b.r * S + e, by = -b.q * S - b.r * S - 2 * e;
   for (let i = 1; i <= n; i++) {
     const x = ax + ((bx - ax) * i) / n;
     const z = az + ((bz - az) * i) / n;

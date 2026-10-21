@@ -2,12 +2,12 @@
 
 exports[`determinism > matches the recorded golden hash (update deliberately when rules change) 1`] = `
 {
-  "actions": 149,
-  "hash": "f7033933",
+  "actions": 113,
+  "hash": "eb35d53a",
   "score": [
-    13,
-    8,
+    3,
+    16,
   ],
-  "winner": 0,
+  "winner": 1,
 }
 `;
