@@ -26,6 +26,7 @@ it('inspect match log', () => {
     else if (process.env.BRIEFING !== '0') out.push(turnBriefing(s, t.unit, t.orders, []));
     out.push('', '-- tool calls --');
     for (const c of t.trace) out.push(`${c.error ? '✗' : '→'} ${c.tool}(${JSON.stringify(c.input)})\n    ${c.result.replace(/\n/g, '\n    ')}`);
+    if (t.facts) out.push(`-- did: ${t.facts}`);
     out.push(t.error ? `-- ERROR: ${t.error}` : `-- report: ${t.report}`);
   });
   writeFileSync(process.env.INSPECT_OUT ?? 'inspect-report.txt', out.join('\n') + '\n');

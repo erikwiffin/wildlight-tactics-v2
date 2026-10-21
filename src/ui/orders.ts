@@ -147,8 +147,9 @@ export class OrdersScreen extends MatchScreen {
           this.noted = true;
           this.addFeed('system', res.note);
         }
-        this.addFeed('report', `${unitName(u)}: ${res.report}`);
-        Object.assign(record, { trace: res.trace, report: res.report, note: res.note, model: res.model });
+        // What happened (from the game) first, then Claude's own words.
+        this.addFeed('report', `${unitName(u)} · ${res.facts}: ${res.report}`);
+        Object.assign(record, { trace: res.trace, facts: res.facts, report: res.report, note: res.note, model: res.model });
       } catch (e) {
         if (this.disposed) return;
         const msg = e instanceof AgentError ? e.message : `Unexpected error: ${(e as Error).message}`;

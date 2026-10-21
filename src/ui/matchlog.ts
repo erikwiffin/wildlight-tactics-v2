@@ -17,6 +17,8 @@ export interface AgentTurnLog {
   /** All of the player's orders at that moment, by unit id. */
   orders: Record<number, string>;
   trace: ToolCallRecord[];
+  /** What the unit actually did according to the game. */
+  facts?: string;
   report?: string;
   error?: string;
   note?: string;

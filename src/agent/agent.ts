@@ -124,7 +124,8 @@ Following orders
 - Your own order comes first. Read your teammates' orders and support their plans: if the tank is ordered to hold a Beacon and you are ordered to protect the tank, stay near the tank and heal or defend it.
 - Orders persist across turns. Apply them sensibly to the current situation; if an order can't be carried out this turn, do the most useful thing that serves it.
 - Use only the briefing and tool results; never invent positions or numbers. check_position shows what you could do from a reachable hex without committing.
-- Be quick. Usually call move and/or use_ability, then end_turn, in a single reply; tools run in the order you call them.
+- Be quick. Usually call move and/or use_ability, then end_turn, in a single reply. Tools run one at a time in the order you call them. If one fails, the rest of that reply is skipped: read the error and call again.
+- Self abilities (range "self") target your own hex: after moving, that is the hex you moved to.
 
 end_turn's report is shown to your commander: one short first-person sentence (at most 20 words) saying what you actually did this turn and how it serves your order. Never claim a move or capture that didn't happen.`;
 
@@ -187,6 +188,8 @@ export interface TurnResult {
   note?: string;
   /** Every tool call this turn, for the match log. */
   trace: ToolCallRecord[];
+  /** What the unit actually did, from the game, not from Claude: "moved to (q,r), used X" or "stayed at (q,r), no action". */
+  facts: string;
   /** The model that played, when known. */
   model?: string;
 }
@@ -200,6 +203,11 @@ type ToolOutcome = { text: string; error?: boolean; ended?: boolean };
 function turnTools(deps: TurnDeps, unitId: number) {
   const steps: string[] = [];
   const trace: ToolCallRecord[] = [];
+  const startPos = { ...deps.state().units[unitId].pos };
+  let movedTo: { q: number; r: number } | null = null;
+  let usedAbility: string | null = null;
+  const facts = () =>
+    `${movedTo ? `moved to ${hx(movedTo)}` : `stayed at ${hx(startPos)}`}, ${usedAbility ? `used ${usedAbility}` : 'no action'}`;
   let checks = 0;
   let report = '';
   const myTurn = () => {
@@ -230,6 +238,7 @@ function turnTools(deps: TurnDeps, unitId: number) {
           return { text: `Can't move to (${q},${r}): ${(e as Error).message}. Moves: ${describeMoves(state, u)}`, error: true };
         }
         const events = await deps.commit(action);
+        movedTo = { q, r };
         const done = summarizeEvents(deps.state(), events);
         steps.push(...done);
         done.forEach((d) => deps.onStep?.(d));
@@ -252,6 +261,7 @@ function turnTools(deps: TurnDeps, unitId: number) {
           return { text: `Can't use ${getAbility(u.defId, id).name} on (${q},${r}): ${why}.\n${describeAbilities(state, u)}`, error: true };
         }
         const events = await deps.commit(action);
+        usedAbility = getAbility(u.defId, id).name;
         const done = summarizeEvents(deps.state(), events);
         steps.push(...done);
         done.forEach((d) => deps.onStep?.(d));
@@ -269,10 +279,39 @@ function turnTools(deps: TurnDeps, unitId: number) {
     }
   };
 
-  const recorded = async (name: string, input: Record<string, unknown>): Promise<ToolOutcome> => {
-    const out = await exec(name, input);
+  // Claude can call several tools in one reply, and claude.ai runs a reply's
+  // calls concurrently. Game actions must happen in the order Claude wrote
+  // them, so calls queue here and run one at a time. If an action fails, the
+  // calls already issued in that reply (planned assuming it worked) are
+  // skipped, and Claude re-plans from the error on its next round.
+  let queue: Promise<unknown> = Promise.resolve();
+  let issued = 0;
+  let skipBefore = 0;
+  const record = (name: string, input: Record<string, unknown>, out: ToolOutcome) =>
     trace.push({ tool: name, input, result: out.text.length > 500 ? out.text.slice(0, 500) + '…' : out.text, ...(out.error ? { error: true } : {}) });
-    return out;
+  const recorded = (name: string, input: Record<string, unknown>): Promise<ToolOutcome> => {
+    const seq = issued++;
+    const run = queue.then(async (): Promise<ToolOutcome> => {
+      let out: ToolOutcome;
+      if (seq < skipBefore) {
+        out = { text: 'Skipped: an earlier call in the same reply failed, so this one was not run. Re-plan from that error.', error: true };
+      } else {
+        try {
+          out = await exec(name, input);
+        } catch (e) {
+          out = { text: `Error: ${(e as Error).message}`, error: true };
+        }
+        if (out.error && name !== 'check_position') skipBefore = issued;
+      }
+      record(name, input, out);
+      return out;
+    });
+    queue = run;
+    return run;
+  };
+  /** Mark the end of a reply (sequential callers): later calls belong to a new round. */
+  const newRound = () => {
+    skipBefore = 0;
   };
   const fail = (msg: string): AgentError => {
     const e = new AgentError(msg);
@@ -282,18 +321,19 @@ function turnTools(deps: TurnDeps, unitId: number) {
 
   return {
     exec: recorded,
+    newRound,
     fail,
     myTurn,
     steps,
     ended: () => !myTurn(),
-    result: (): TurnResult => ({ report: report || steps[steps.length - 1] || 'Done.', steps, trace }),
+    result: (): TurnResult => ({ report: report || steps[steps.length - 1] || 'Done.', steps, trace, facts: facts() }),
   };
 }
 
 /** Backend 1: the Anthropic SDK through the dev proxy, with a manual loop that stops at end_turn. */
 export function apiRunner(client: AgentClient): TurnRunner {
   return async (deps, unitId, orders, recent) => {
-  const { exec, myTurn, result, fail } = turnTools(deps, unitId);
+  const { exec, newRound, myTurn, result, fail } = turnTools(deps, unitId);
   const done = (): TurnResult => ({ ...result(), model: AGENT_MODEL });
   const messages: Anthropic.MessageParam[] = [{ role: 'user', content: turnBriefing(deps.state(), unitId, orders, recent) }];
   let nudged = false;
@@ -333,12 +373,16 @@ export function apiRunner(client: AgentClient): TurnRunner {
     }
     const results: Anthropic.ToolResultBlockParam[] = [];
     let ended = false;
+    let failed = false;
+    newRound();
     for (const tu of uses) {
-      if (ended) {
-        results.push({ type: 'tool_result', tool_use_id: tu.id, content: 'Skipped: your turn already ended.', is_error: true });
+      if (ended || failed) {
+        const why = ended ? 'your turn already ended.' : 'an earlier call in this reply failed, so this one was not run. Re-plan from that error.';
+        results.push({ type: 'tool_result', tool_use_id: tu.id, content: `Skipped: ${why}`, is_error: true });
         continue;
       }
       const out = await exec(tu.name, (tu.input ?? {}) as Record<string, unknown>);
+      if (out.error && tu.name !== 'check_position') failed = true;
       results.push({ type: 'tool_result', tool_use_id: tu.id, content: out.text, ...(out.error ? { is_error: true } : {}) });
       if (out.ended) ended = true;
     }

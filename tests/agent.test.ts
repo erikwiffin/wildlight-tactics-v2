@@ -63,23 +63,31 @@ describe('agent briefing (what the agent can see)', () => {
 });
 
 describe('agent turn loop', () => {
-  it('runs move, ability and end_turn from one reply, in order, and returns the report', async () => {
+  it('runs a reply\'s calls in order; a failed action skips the rest of the reply so Claude can retry', async () => {
     const s = match();
     const dest = [...reachable(s, s.units[0]).values()][0].hex;
     const client = fakeClient([
       () => ({
         content: [
           toolUse('a', 'move', dest),
-          toolUse('b', 'use_ability', { ability: 'bite', q: 99, r: 99 }), // illegal: reported, not fatal
-          toolUse('c', 'end_turn', { facing: 'NE', report: 'Moved up toward B2.' }),
+          toolUse('b', 'use_ability', { ability: 'bite', q: 99, r: 99 }), // illegal
+          toolUse('c', 'end_turn', { facing: 'NE', report: 'Moved up toward B2.' }), // skipped
         ],
       }),
+      (req) => {
+        const results = req.messages.at(-1)!.content as Anthropic.ToolResultBlockParam[];
+        expect(results.map((r) => !!r.is_error)).toEqual([false, true, true]);
+        expect(String(results[2].content)).toContain('Skipped');
+        expect(activeUnit(s)?.id).toBe(0); // turn still ours
+        return { content: [toolUse('d', 'end_turn', { facing: 'NE', report: 'Moved up toward B2.' })] };
+      },
     ]);
     const res = await apiRunner(client)(deps(s), 0, { 0: 'Take B2' }, []);
     expect(res.report).toBe('Moved up toward B2.');
     expect(s.units[0].pos).toEqual(dest);
+    expect(res.facts).toBe(`moved to (${dest.q},${dest.r}), no action`);
     expect(activeUnit(s)?.id).not.toBe(0);
-    expect(client.calls).toHaveLength(1);
+    expect(client.calls).toHaveLength(2);
     expect(client.calls[0].model).toBe('claude-haiku-5-5');
     expect(client.calls[0].system).toEqual([{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }]);
   });
@@ -226,5 +234,82 @@ describe('beacon names (how orders refer to Beacons)', () => {
   it('covers the lane and ring maps', () => {
     expect(names('fault', 0, 5)).toEqual(['home', 'enemy home', 'left flank', 'right flank', 'center']);
     expect(names('caldera', 0, 4)).toEqual(['home', 'enemy home', 'left flank', 'right flank']);
+  });
+});
+
+describe('tool calls that arrive at the same time (claude.ai runs a round concurrently)', () => {
+  /** Like the platform: one round, every tool call started at once. */
+  function concurrentSample(calls: { tool: string; input: Record<string, unknown> }[]) {
+    const seen: { results: string[] } = { results: [] };
+    const fn = (async (_prompt, options) => {
+      const results = await Promise.all(
+        calls.map((c) =>
+          Promise.resolve()
+            .then(() => options.tools.find((t) => t.name === c.tool)!.execute(c.input))
+            .then((r) => String(r), (e) => `Error: ${(e as Error).message}`),
+        ),
+      );
+      seen.results = results;
+      return { text: 'ok', truncated: false, modelTierApplied: 'quick', modelApplied: 'claude-haiku-5-5' };
+    }) as SampleFn;
+    fn.limits = async () => ({ tools: { maxCount: 8 } });
+    return { fn, seen };
+  }
+  /** Like the game screen: moves and abilities animate (take time), ending a turn doesn't. */
+  function animatedDeps(state: GameState) {
+    return {
+      state: () => state,
+      commit: async (a: Parameters<typeof applyAction>[1]) => {
+        if (a.type !== 'end') await new Promise((r) => setTimeout(r, 20));
+        return applyAction(state, a);
+      },
+    };
+  }
+
+  it('runs them one at a time, in the order Claude called them', async () => {
+    const s = match();
+    const rhino = s.units.find((u) => u.team === 0 && u.defId === 'rhino')!;
+    s.turn = { unit: rhino.id, moved: false, acted: false };
+    const dest = [...reachable(s, rhino).values()].at(-1)!.hex;
+    const { fn } = concurrentSample([
+      { tool: 'move', input: { ...dest } },
+      { tool: 'use_ability', input: { ability: 'plate', ...dest } },
+      { tool: 'end_turn', input: { facing: 'NE', report: 'Moved up and shielded.' } },
+    ]);
+    const res = await sampleRunner(fn)(animatedDeps(s), rhino.id, { [rhino.id]: 'Advance' }, []);
+    expect(rhino.pos).toEqual(dest);
+    expect(rhino.statuses.map((x) => x.id)).toContain('shield');
+    expect(res.trace.map((c) => c.tool)).toEqual(['move', 'use_ability', 'end_turn']);
+    expect(res.facts).toBe(`moved to (${dest.q},${dest.r}), used Plate Up`);
+  });
+
+  it('skips the rest of a round after a failed action, so Claude can re-plan', async () => {
+    const s = match();
+    const rhino = s.units.find((u) => u.team === 0 && u.defId === 'rhino')!;
+    s.turn = { unit: rhino.id, moved: false, acted: false };
+    const { fn, seen } = concurrentSample([
+      { tool: 'use_ability', input: { ability: 'plate', q: 6, r: -6 } }, // wrong target
+      { tool: 'end_turn', input: { facing: 'NE', report: 'Shielded.' } },
+    ]);
+    await expect(sampleRunner(fn)(animatedDeps(s), rhino.id, { [rhino.id]: 'x' }, [])).rejects.toThrow(AgentError);
+    expect(seen.results[1]).toContain('Skipped');
+    expect(s.turn?.unit).toBe(rhino.id); // the turn did not end behind Claude's back
+  });
+
+  it('records actions that throw instead of losing them from the log', async () => {
+    const s = match();
+    const failing = {
+      state: () => s,
+      commit: async () => {
+        throw new Error('boom');
+      },
+    };
+    const client = fakeClient([
+      () => ({ content: [toolUse('a', 'move', { ...[...reachable(s, s.units[0]).values()][0].hex })] }),
+      () => ({ content: [toolUse('b', 'end_turn', { facing: 'E', report: 'x' })] }),
+    ]);
+    const err = await apiRunner(client)(failing, 0, { 0: 'x' }, []).catch((e) => e);
+    expect(err).toBeInstanceOf(AgentError);
+    expect(err.trace[0]).toMatchObject({ tool: 'move', error: true, result: 'Error: boom' });
   });
 });
