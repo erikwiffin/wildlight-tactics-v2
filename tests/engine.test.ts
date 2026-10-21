@@ -18,7 +18,7 @@ import type { GameState, Unit } from '../src/core/types';
 const TEAMS: [string[], string[]] = [['rhino', 'fox', 'moth', 'eel'], ['lynx', 'porcupine', 'octopus', 'eel']];
 const fresh = () => createMatch(newConfig('test', TEAMS));
 
-function place(state: GameState, u: Unit, q: number, r: number) {
+function place(_state: GameState, u: Unit, q: number, r: number) {
   u.pos = { q, r };
 }
 
@@ -92,7 +92,6 @@ describe('combat', () => {
     const s = fresh();
     const lynx = s.units.find((u) => u.defId === 'lynx')!;
     const rhino = s.units.find((u) => u.defId === 'rhino')!;
-    for (const [q, r] of [[0, 0], [-1, 0]]) void q, void r;
     rhino.pos = { q: 4, r: 4 }; // flat ground
     rhino.facing = 0;
     const claw = getAbility('lynx', 'claw');
