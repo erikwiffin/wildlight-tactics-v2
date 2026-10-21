@@ -16,6 +16,10 @@ export function modal(html: string, handlers: Record<string, () => void>): () =>
   box.innerHTML = html;
   bg.append(box);
   document.body.append(bg);
+  // Tapping outside a dismissable modal (one with a close handler) closes it.
+  bg.addEventListener('click', (e) => {
+    if (e.target === bg && handlers.close) handlers.close();
+  });
   box.addEventListener('click', (e) => {
     const a = (e.target as HTMLElement).closest<HTMLElement>('[data-a]')?.dataset.a;
     if (a && handlers[a]) handlers[a]();

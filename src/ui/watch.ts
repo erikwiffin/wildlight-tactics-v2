@@ -7,6 +7,7 @@ import type { Hex } from '../core/hex';
 import { encodeReplay, replay } from '../core/replay';
 import { el, esc, modal } from './dom';
 import { cap, copyText, MatchScreen } from './match';
+import { showHelp } from './hud';
 import { saveMatch } from './store';
 import type { ActionSource } from '../sim';
 
@@ -112,6 +113,7 @@ export class WatchScreen extends MatchScreen {
   private seek(k: number): void {
     this.state = replay({ config: this.src.config, actions: this.src.actions }, k);
     this.log = this.src.actions.slice(0, k);
+    this.battleLog.push(`⏩ Jumped to action ${k}`);
     this.view.speed = this.speed;
     this.view.clearHighlights();
     this.view.sync(this.state);
@@ -232,7 +234,10 @@ export class WatchScreen extends MatchScreen {
   }
 
   protected onTap(h: Hex | null): void {
-    this.inspect = h ? unitAt(this.state, h)?.id ?? null : null;
+    const tapped = h ? unitAt(this.state, h) : undefined;
+    this.inspect = tapped?.id ?? null;
+    this.view.clearHighlights();
+    this.showThreat(tapped, null);
     this.renderPanel();
   }
 
@@ -242,12 +247,14 @@ export class WatchScreen extends MatchScreen {
     const close = modal(`
       <h2>${this.opts.live ? 'AI vs AI' : 'Replay'}</h2>
       <div class="hint">Seed <b>${esc(this.src.config.seed)}</b> · ${this.src.actions.length} actions${this.src.complete ? '' : ' so far'}${this.opts.live && this.src.complete ? ' · saved to library' : ''}</div>
-      ${code ? `<textarea readonly>${code}</textarea>` : '<div class="hint">The replay code is ready once the simulation finishes.</div>'}
+      <button data-a="close" class="primary">Resume</button>
       <div class="btns">
-        <button data-a="copy" ${code ? '' : 'disabled'}>Copy replay code</button>
+        <button data-a="help">How to play</button>
         <button data-a="exit">${esc(this.opts.exitLabel)}</button>
+        <button data-a="copy" ${code ? '' : 'disabled'} title="${code ? '' : 'Ready once the simulation finishes'}">Copy replay code</button>
       </div>
-      <button data-a="close" class="primary">Resume</button>`, {
+      ${code ? `<textarea readonly hidden>${code}</textarea>` : ''}`, {
+      help: () => { close(); showHelp(this.state); },
       copy: () => copyText(code),
       exit: () => { close(); this.opts.onExit(); },
       close: () => close(),

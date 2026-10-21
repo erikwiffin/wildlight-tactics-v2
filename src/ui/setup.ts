@@ -7,6 +7,7 @@ import { MONSTER_BY_ID, MONSTERS } from '../core/monsters';
 import type { MapDef, StrategyId } from '../core/types';
 import { resolveAgent } from '../agent/agent';
 import { el, esc } from './dom';
+import { icon, showHelp, showUnitSheet } from './hud';
 import { loadPrefs, savePrefs, type Prefs } from './store';
 
 const WORDS = ['ember', 'static', 'moss', 'quill', 'shade', 'tide', 'glint', 'ash', 'bloom', 'flux', 'umbra', 'spark'];
@@ -29,6 +30,13 @@ export function showSetup(host: HTMLElement, onStart: (r: SetupResult) => void, 
   screen.innerHTML = `
     <h1 class="title">WILD<span>LIGHT</span> TACTICS</h1>
     <p class="tagline">Nanite-touched animals fight for the Beacons.</p>`;
+  const top = el('div', 'setup-top');
+  const helpBtn = el('button', 'ghost small', 'How to play');
+  helpBtn.onclick = () => showHelp();
+  const libTop = el('button', 'ghost small', 'Match library');
+  libTop.onclick = () => onLibrary();
+  top.append(helpBtn, libTop);
+  screen.append(top);
 
   // Mode
   const modeRow = el('div', 'segmented');
@@ -55,7 +63,7 @@ export function showSetup(host: HTMLElement, onStart: (r: SetupResult) => void, 
     drawMiniMap(c, m);
     b.append(c);
     const info = el('div', 'map-info');
-    info.innerHTML = `<h3>${esc(m.name)}</h3><div class="map-tags"><span>${m.teamSize}v${m.teamSize}</span><span>${m.beacons.length} Beacons</span><span>to ${m.scoreToWin}</span></div><p>${esc(m.blurb)}</p>`;
+    info.innerHTML = `<h3>${esc(m.name)}</h3><div class="map-tags"><span>${m.teamSize}v${m.teamSize}</span><span>${m.beacons.length} ◆</span></div>`;
     b.append(info);
     b.onclick = () => {
       prefs.mapId = m.id;
@@ -65,7 +73,8 @@ export function showSetup(host: HTMLElement, onStart: (r: SetupResult) => void, 
     mapGrid.append(b);
     return { b, id: m.id };
   });
-  mapSection.append(mapGrid);
+  const mapBlurb = el('p', 'hint map-blurb');
+  mapSection.append(mapGrid, mapBlurb);
 
   // Control (You vs AI only)
   const controlSection = section('How you play');
@@ -106,29 +115,32 @@ export function showSetup(host: HTMLElement, onStart: (r: SetupResult) => void, 
   const roster = el('div', 'roster');
   const cards = MONSTERS.map((m) => {
     const b = el('button', 'mcard');
-    const s = m.stats;
     b.innerHTML = `
-      <div class="role">${m.role}</div>
-      <h3>${esc(m.name)}</h3>
-      <p>${esc(m.blurb)}</p>
-      <div class="kit">${m.abilities.map((a) => esc(a.name)).join(' · ')}</div>
-      <div class="nums"><span>HP ${s.hp}</span><span>SPD ${s.spd}</span><span>MOV ${s.move}</span><span>JMP ${s.jump}</span></div>`;
+      <span class="mcard-icon">${icon(m.id)}</span>
+      <span class="mcard-text"><h3>${esc(m.name)}</h3><span class="role">${m.role}</span><p>${esc(m.blurb)}</p></span>`;
+    const wrap = el('div', 'mcard-wrap');
+    const info = el('button', 'info-btn ghost', 'ⓘ');
+    info.setAttribute('aria-label', `${m.name} details`);
+    info.title = 'Stats and abilities';
+    info.onclick = () => showUnitSheet(m.id);
+    wrap.append(b, info);
     b.onclick = () => {
       const i = prefs.picks.indexOf(m.id);
       if (i >= 0) prefs.picks.splice(i, 1);
       else if (prefs.picks.length < MAPS[prefs.mapId].teamSize) prefs.picks.push(m.id);
       refresh();
     };
-    roster.append(b);
+    roster.append(wrap);
     return { b, id: m.id };
   });
   teamSection.append(teamHint, roster);
   const aiTeams = el('div', 'ai-teams');
   teamSection.append(aiTeams);
 
-  // Start bar
+  // Seed (advanced), then the start bar
+  const seedBox = el('details', 'seed-box');
+  seedBox.innerHTML = `<summary>Advanced: seed</summary><p class="hint">The same seed, map, teams and AI styles always play out the same way.</p>`;
   const bar = el('div', 'start-bar');
-  bar.innerHTML = `<label for="seed">Seed</label>`;
   const seedInput = el('input');
   seedInput.id = 'seed';
   seedInput.autocomplete = 'off';
@@ -141,8 +153,6 @@ export function showSetup(host: HTMLElement, onStart: (r: SetupResult) => void, 
     refresh();
   };
   seedInput.oninput = () => refresh();
-  const libBtn = el('button', 'ghost', 'Library');
-  libBtn.onclick = () => onLibrary();
   const start = el('button', 'primary');
   start.onclick = () => {
     savePrefs(prefs);
@@ -150,9 +160,10 @@ export function showSetup(host: HTMLElement, onStart: (r: SetupResult) => void, 
   };
   const seedRow = el('div', 'seed-row');
   seedRow.append(seedInput, reroll);
-  bar.append(seedRow, libBtn, start);
+  seedBox.append(seedRow);
+  bar.append(start);
 
-  screen.append(modeRow, mapSection, controlSection, styleSection, teamSection, bar);
+  screen.append(modeRow, mapSection, controlSection, styleSection, teamSection, seedBox, bar);
   host.replaceChildren(screen);
 
   function styleRow(label: string, value: StrategyId, set: (s: StrategyId) => void): HTMLElement {
@@ -178,6 +189,7 @@ export function showSetup(host: HTMLElement, onStart: (r: SetupResult) => void, 
     const seed = seedInput.value.trim() || 'seed';
     for (const { b, m } of modeBtns) b.setAttribute('aria-selected', String(prefs.mode === m));
     for (const { b, id } of mapCards) b.classList.toggle('on', id === prefs.mapId);
+    mapBlurb.innerHTML = `<b>${esc(map.name)}</b> · first to ${map.scoreToWin}. ${esc(map.blurb)}`;
     styleHost.replaceChildren();
     if (prefs.mode === 'play') {
       styleHost.append(styleRow('Opponent', prefs.enemy, (s) => (prefs.enemy = s)));

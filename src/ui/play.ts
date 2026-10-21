@@ -6,6 +6,7 @@ import {
   abilityTargets,
   activeUnit,
   defOf,
+  movePath,
   previewAbility,
   reachable,
   scoreToWin,
@@ -18,6 +19,7 @@ import { encodeReplay, type Replay } from '../core/replay';
 import type { GameState, MatchConfig, StrategyId, Unit } from '../core/types';
 import { el, esc, modal } from './dom';
 import { cap, copyText, MatchScreen, pct } from './match';
+import { rangeText, safestFacing, showHelp } from './hud';
 import { buildMatchLog, showExport } from './matchlog';
 import { saveMatch } from './store';
 
@@ -48,6 +50,7 @@ export class PlayScreen extends MatchScreen {
     this.enemy = enemy;
     this.renderHud();
     this.frameActive();
+    this.view.onHover = (h) => this.onHover(h);
     void this.loop();
   }
 
@@ -135,10 +138,29 @@ export class PlayScreen extends MatchScreen {
     this.renderHud();
   }
 
+  /** Mouse hover, or a finger touching down: preview the route a move would take. */
+  private onHover(h: Hex | null): void {
+    const u = this.me();
+    if (!u || this.mode.k !== 'move') return;
+    const reach = [...reachable(this.state, u).values()].map((n) => n.hex);
+    this.view.clearHighlights();
+    this.view.highlight(reach, 'move');
+    if (h && reach.some((r) => hexEq(r, h))) this.view.highlight(movePath(this.state, u, h), 'path');
+  }
+
+  private faceSafely(u: Unit): Mode {
+    return { k: 'facing', facing: safestFacing(this.state, u) };
+  }
+
   protected onTap(h: Hex | null): void {
     const u = this.me();
     const m = this.mode;
     if (!h) {
+      if (this.inspect !== null && (m.k === 'menu' || m.k === 'busy' || m.k === 'over')) {
+        this.inspect = null;
+        this.view.clearHighlights();
+        return this.renderPanel();
+      }
       if (m.k === 'move' || m.k === 'target' || m.k === 'confirm') this.setMode(m.k === 'confirm' ? { k: 'target', ability: m.ability } : { k: 'menu' });
       return;
     }
@@ -162,10 +184,14 @@ export class PlayScreen extends MatchScreen {
         return this.setMode({ k: 'facing', facing: f });
       }
     }
-    // Otherwise: inspect whoever was tapped.
+    // Otherwise: inspect whoever was tapped (an enemy also shows its reach).
     this.inspect = tapped?.id ?? null;
     if (u && m.k === 'menu' && tapped?.id === u.id) {
       if (!this.state.turn!.moved) return this.setMode({ k: 'move' });
+    }
+    if (m.k === 'menu' || m.k === 'busy' || m.k === 'over') {
+      this.view.clearHighlights();
+      this.showThreat(tapped, PLAYER);
     }
     this.renderPanel();
   }
@@ -199,7 +225,7 @@ export class PlayScreen extends MatchScreen {
     const u = this.me();
     if (!u) return void this.loop(); // our unit fell mid-turn
     const t = this.state.turn!;
-    this.setMode(t.moved && t.acted ? { k: 'facing', facing: u.facing } : { k: 'menu' });
+    this.setMode(t.moved && t.acted ? this.faceSafely(u) : { k: 'menu' });
   }
 
   private doUndo(): void {
@@ -239,7 +265,7 @@ export class PlayScreen extends MatchScreen {
       case 'menu':
         btn('Move', () => this.setMode({ k: 'move' }), { disabled: turn.moved });
         btn('Act', () => this.setMode({ k: 'abilities' }), { disabled: turn.acted });
-        btn(turn.moved || turn.acted ? 'End turn' : 'Wait', () => this.setMode({ k: 'facing', facing: u.facing }));
+        btn(turn.moved || turn.acted ? 'End turn' : 'Wait', () => this.setMode(this.faceSafely(u)));
         if (this.undo && !turn.acted) btn('Undo move', () => this.doUndo());
         p.append(actions);
         break;
@@ -255,9 +281,9 @@ export class PlayScreen extends MatchScreen {
           const blocked: Hex[] = [];
           const targets = abilityTargets(this.state, u, ab.id, blocked);
           const b = el('button', 'ability');
-          const range = ab.maxRange === 0 ? 'self' : ab.minRange === ab.maxRange ? `rng ${ab.maxRange}` : `rng ${ab.minRange}-${ab.maxRange}`;
-          const why = cd > 0 ? `cooldown ${cd}` : targets.length === 0 && blocked.length ? 'no line of sight' : range;
-          b.innerHTML = `<span class="an">${esc(ab.name)}</span><span class="meta">${why}${ab.chargeSpeed ? ' · charges' : ''}${ab.los ? ' · needs sight' : ''}</span><span class="ad">${esc(ab.desc)}</span>`;
+          const why = cd > 0 ? `ready in ${cd} turn${cd === 1 ? '' : 's'}` : targets.length === 0 ? (blocked.length ? 'no line of sight' : 'no target in range') : rangeText(ab) + (ab.chargeSpeed ? ' · charges' : '');
+          b.innerHTML = `<span class="an">${esc(ab.name)}</span><span class="meta">${why}</span>`;
+          b.title = ab.desc;
           b.disabled = cd > 0 || targets.length === 0;
           b.onclick = () => {
             if (ab.affects === 'self') this.setMode({ k: 'confirm', ability: ab.id, target: u.pos });
@@ -272,7 +298,7 @@ export class PlayScreen extends MatchScreen {
       }
       case 'target': {
         const ab = getAbility(u.defId, m.ability);
-        p.append(el('div', 'hint', `${ab.name}: tap a yellow hex to aim.${ab.los ? ' Grey hexes are out of sight.' : ''}`));
+        p.append(el('div', 'hint', `${ab.desc} Tap a yellow hex to aim.${ab.los ? ' Grey hexes are out of sight.' : ''}`));
         btn('Back', () => this.setMode({ k: 'abilities' }));
         p.append(actions);
         break;
@@ -281,7 +307,8 @@ export class PlayScreen extends MatchScreen {
         const ab = getAbility(u.defId, m.ability);
         const rows = previewAbility(this.state, u, m.ability, m.target);
         const prev = el('div', 'preview');
-        if (!rows.length) prev.append(el('div', 'hint', ab.affects === 'tiles' ? `${ab.name} on the red area.` : 'No one in the area yet.'));
+        if (ab.affects === 'self' || !rows.length) prev.append(el('div', 'hint', ab.desc));
+        if (!rows.length && ab.affects !== 'self') prev.append(el('div', 'hint', ab.affects === 'tiles' ? 'Lands on the red area.' : 'No one in the area yet.'));
         for (const r of rows) {
           const t = this.state.units[r.unit];
           const row = el('div', 'row');
@@ -296,10 +323,9 @@ export class PlayScreen extends MatchScreen {
         break;
       }
       case 'facing':
-        p.append(el('div', 'hint', 'Choose a facing: tap a green hex. Your back takes +50% damage.'));
-        if (this.undo && !turn.acted) btn('Undo move', () => this.doUndo());
+        p.append(el('div', 'hint', 'Facing the safest way. Tap a green hex to turn; your back takes +50%.'));
         btn('Back', () => this.setMode({ k: 'menu' }));
-        btn('Confirm', () => void this.doEnd(m.facing), { primary: true });
+        btn('End turn', () => void this.doEnd(m.facing), { primary: true });
         p.append(actions);
         break;
     }
@@ -311,15 +337,17 @@ export class PlayScreen extends MatchScreen {
   protected openMenu(): void {
     const code = encodeReplay(this.replay());
     const close = modal(`
-      <h2>Menu</h2>
-      <div class="hint">Seed <b>${esc(this.state.config.seed)}</b> · ${this.log.length} actions · vs ${esc(cap(this.enemy))} AI</div>
-      <textarea readonly>${code}</textarea>
+      <h2>Paused</h2>
+      <div class="hint">Seed <b>${esc(this.state.config.seed)}</b> · vs ${esc(cap(this.enemy))} AI</div>
+      <button data-a="close" class="primary">Resume</button>
       <div class="btns">
+        <button data-a="help">How to play</button>
+        <button data-a="quit">Save and quit</button>
         <button data-a="copy">Copy replay code</button>
         <button data-a="export">Export match log</button>
-        <button data-a="quit">Save and quit</button>
       </div>
-      <button data-a="close" class="primary">Resume</button>`, {
+      <textarea readonly hidden>${code}</textarea>`, {
+      help: () => { close(); showHelp(this.state); },
       copy: () => copyText(code),
       export: () => { close(); showExport(buildMatchLog(this.replay(), this.state, 'direct')); },
       quit: () => { close(); this.save(); this.onExit({ to: 'setup' }); },
@@ -342,7 +370,7 @@ export class PlayScreen extends MatchScreen {
       <h2>${title}</h2>
       <div>${this.state.score[0]} – ${this.state.score[1]} · ${how}</div>
       <div class="hint">${this.savedId ? 'Saved to your match library.' : 'This browser blocks storage, so copy the code to keep this match.'}</div>
-      <textarea readonly>${code}</textarea>
+      <textarea readonly hidden>${code}</textarea>
       <div class="btns">
         <button data-a="copy">Copy replay code</button>
         <button data-a="watch">Watch replay</button>

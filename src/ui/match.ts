@@ -12,14 +12,14 @@ import {
 } from '../core/engine';
 import { hexDistance, hexEq, type Hex } from '../core/hex';
 import { getMap } from '../core/map';
-import { abilityById, getAbility, MONSTER_BY_ID } from '../core/monsters';
+import { abilityById, getAbility } from '../core/monsters';
 import type { Action, GameEvent, GameState, MatchConfig, Unit } from '../core/types';
 import { BoardView, STATUS_ICON } from '../render/view';
 import { playFx, type FxContext } from '../render/vfx';
-import { el, esc } from './dom';
+import { el, esc, modal } from './dom';
+import { icon, logLine, shortSide, showUnitSheet, threat } from './hud';
 import { loadPrefs, savePrefs } from './store';
 
-export const mono = (defId: string) => MONSTER_BY_ID[defId].name.split(' ')[1].slice(0, 2).toUpperCase();
 export const pct = (bp: number) => `${Math.round(bp / 100)}%`;
 export const cap = (s: string) => s[0].toUpperCase() + s.slice(1);
 
@@ -32,6 +32,8 @@ export abstract class MatchScreen {
   protected inspect: number | null = null;
   protected autoZoom: boolean;
   private zoomBtn: HTMLButtonElement;
+  /** Readable history of this match for the battle log. */
+  protected battleLog: string[] = [];
 
   constructor(
     host: HTMLElement,
@@ -52,18 +54,28 @@ export abstract class MatchScreen {
     this.view = new BoardView(this.els.board, this.state);
     this.view.onTap = (h) => this.onTap(h);
 
+    const iconBtn = (cls: string, text: string, label: string, on: () => void) => {
+      const b = el('button', cls, text);
+      b.setAttribute('aria-label', label);
+      b.title = label;
+      b.onclick = on;
+      return b;
+    };
     const ctrl = el('div', 'board-ctrl left');
-    const rotL = el('button', '', '⟲');
-    const rotR = el('button', '', '⟳');
-    rotL.setAttribute('aria-label', 'Rotate left');
-    rotR.setAttribute('aria-label', 'Rotate right');
-    rotL.onclick = () => this.view.rotate(-1);
-    rotR.onclick = () => this.view.rotate(1);
     this.autoZoom = loadPrefs().autoZoom;
-    this.zoomBtn = el('button', 'zoom-toggle', 'Auto zoom');
-    this.zoomBtn.onclick = () => this.setAutoZoom(!this.autoZoom);
-    ctrl.append(rotL, rotR, this.zoomBtn);
-    this.els.board.append(ctrl);
+    this.zoomBtn = iconBtn('zoom-toggle', '⌖', 'Auto zoom', () => this.setAutoZoom(!this.autoZoom));
+    ctrl.append(
+      iconBtn('', '⟲', 'Rotate left', () => this.view.rotate(-1)),
+      iconBtn('', '⟳', 'Rotate right', () => this.view.rotate(1)),
+      this.zoomBtn,
+    );
+    const right = el('div', 'board-ctrl right');
+    right.append(iconBtn('', '☷', 'Battle log', () => this.openLog()));
+    this.els.board.append(ctrl, right);
+    this.els.queue.onclick = (e) => {
+      const id = (e.target as HTMLElement).closest<HTMLElement>('[data-unit]')?.dataset.unit;
+      if (id !== undefined) this.focusUnit(Number(id));
+    };
     this.setAutoZoom(this.autoZoom, false);
   }
 
@@ -95,6 +107,11 @@ export abstract class MatchScreen {
     if (!this.autoZoom) return;
     const u = activeUnit(this.state);
     if (!u) return this.view.frameAll();
+    this.frameUnit(u);
+  }
+
+  /** Frame a unit's movement and attack reach. */
+  private frameUnit(u: Unit): void {
     const def = defOf(u);
     const reach = def.stats.move + Math.min(4, Math.max(...def.abilities.map((a) => a.maxRange)));
     const tiles = getMap(this.state.config.mapId, this.state.config.rulesVersion).def.tiles.filter((t) => hexDistance(t, u.pos) <= reach);
@@ -141,6 +158,8 @@ export abstract class MatchScreen {
     for (let i = 0; i < events.length; i++) {
       const e = events[i];
       if (this.disposed) return;
+      const line = logLine(this.state, e, this.sideNames);
+      if (line) this.battleLog.push(line);
       switch (e.type) {
         case 'move':
           await this.view.animatePath(e.unit, e.path);
@@ -220,7 +239,7 @@ export abstract class MatchScreen {
           break;
         case 'capture':
           this.view.setBeaconOwner(e.beacon, e.team);
-          this.toast(`${this.sideNames[e.team].split(' ')[0]} took a Beacon`);
+          this.toast(`${shortSide(this.sideNames[e.team])} took a Beacon`);
           await this.sleep(350);
           break;
         case 'pulse':
@@ -288,15 +307,15 @@ export abstract class MatchScreen {
     const target = scoreToWin(this.state);
     const pips = this.state.beacons.map((b) => `<span class="${b.owner === null ? '' : 'o' + b.owner}"></span>`).join('');
     const side = (t: 0 | 1) => {
-      const who = `<span class="who">${esc(this.sideNames[t])}</span>`;
-      const pts = `<span class="pts">${score[t]}</span>`;
+      const who = `<span class="who" title="${esc(this.sideNames[t])}">${esc(shortSide(this.sideNames[t]))}</span>`;
+      const pts = `<span class="pts">${score[t]}<small>/${target}</small></span>`;
       return `
       <div class="score t${t}">
         <div class="row">${t === 0 ? who + pts : pts + who}</div>
         <div class="bar"><i style="width:${Math.min(100, (100 * score[t]) / target)}%"></i></div>
       </div>`;
     };
-    this.els.top.innerHTML = `${side(0)}<div class="beacon-pips" title="Beacons · first to ${target}">${pips}</div>${side(1)}`;
+    this.els.top.innerHTML = `${side(0)}<div class="beacon-pips" title="Beacons held">${pips}</div>${side(1)}`;
     const menu = el('button', 'icon-btn ghost', '☰');
     menu.setAttribute('aria-label', 'Menu');
     menu.onclick = () => this.openMenu();
@@ -309,8 +328,9 @@ export abstract class MatchScreen {
       .map((e, i) => {
         if (e.kind === 'pulse') return `<div class="chip pulse" title="Pulse: Beacons score">⚡</div>`;
         const u = this.state.units[e.unit];
-        if (e.kind === 'cast') return `<div class="chip cast t${u.team}" title="Charging">${esc(getAbility(u.defId, e.ability).name.split(' ')[0])}</div>`;
-        return `<div class="chip t${u.team}${i === 0 && this.state.turn ? ' now' : ''}">${mono(u.defId)}<small>${u.hp}</small></div>`;
+        const name = esc(defOf(u).name);
+        if (e.kind === 'cast') return `<button class="chip cast t${u.team}" data-unit="${u.id}" title="${name} charging ${esc(getAbility(u.defId, e.ability).name)}">${icon(u.defId)}<small>⏳</small></button>`;
+        return `<button class="chip t${u.team}${i === 0 && this.state.turn ? ' now' : ''}" data-unit="${u.id}" title="${name}">${icon(u.defId)}<small>${u.hp}</small></button>`;
       })
       .join('');
   }
@@ -328,21 +348,48 @@ export abstract class MatchScreen {
 
   protected unitCard(u: Unit, ownTeam: 0 | 1 | null): HTMLElement {
     const def = defOf(u);
-    const s = def.stats;
     const card = el('div', 'card');
-    const statuses = u.statuses.map((x) => `${STATUS_ICON[x.id]} ${x.id} (${x.turns})`).join('  ');
-    const onBeacon = this.state.beacons.findIndex((b) => hexEq(b.pos, u.pos));
-    const side = ownTeam === null ? this.sideNames[u.team].split(' ')[0] : u.team === ownTeam ? '' : 'enemy';
+    const statuses = u.statuses.map((x) => `<span title="${x.id}, ${x.turns} turn${x.turns === 1 ? '' : 's'}">${STATUS_ICON[x.id]} ${x.id}</span>`).join('');
+    const onBeacon = this.state.beacons.some((b) => hexEq(b.pos, u.pos));
+    const side = ownTeam === null ? shortSide(this.sideNames[u.team]) : u.team === ownTeam ? '' : 'enemy';
+    const tags = [def.role, side, onBeacon ? '◆ on Beacon' : '', u.alive ? '' : 'KO'].filter(Boolean).map(esc).join(' · ');
     card.innerHTML = `
-      <div class="mono t${u.team}">${mono(u.defId)}</div>
-      <div class="name">${esc(def.name)} <small>${def.role}${side ? ' · ' + esc(side) : ''}${onBeacon >= 0 ? ' · on Beacon' : ''}${u.alive ? '' : ' · KO'}</small></div>
+      <div class="mono t${u.team}">${icon(u.defId)}</div>
+      <div class="name">${esc(def.name)} <small>${tags}</small></div>
       <div class="hpline"><div class="hpbar"><i style="width:${(100 * u.hp) / u.maxHp}%"></i></div>${u.hp}/${u.maxHp}</div>
-      <div class="stats">
-        <span>ATK <b>${s.atk}</b></span><span>DEF <b>${s.def}</b></span><span>MAG <b>${s.mag}</b></span><span>RES <b>${s.res}</b></span>
-        <span>SPD <b>${s.spd}</b></span><span>MOV <b>${s.move}</b></span><span>JMP <b>${s.jump}</b></span><span>CT <b>${u.ct}</b></span>
-      </div>
       ${statuses ? `<div class="statuses">${statuses}</div>` : ''}`;
+    const info = el('button', 'info-btn ghost', 'ⓘ');
+    info.setAttribute('aria-label', `${def.name} details`);
+    info.title = 'Stats and abilities';
+    info.onclick = () => showUnitSheet(u.defId, u);
+    card.append(info);
     return card;
+  }
+
+  /** Inspect a unit: show its card and, for an enemy of `ownTeam`, where it can reach next turn. */
+  protected showThreat(u: Unit | undefined, ownTeam: 0 | 1 | null): void {
+    if (!u || !u.alive || (ownTeam !== null && u.team === ownTeam)) return;
+    const t = threat(this.state, u);
+    this.view.highlight(t.hit, 'threat');
+    this.view.highlight(t.move, 'reach');
+  }
+
+  /** Select a unit from the turn queue and bring it into view. */
+  protected focusUnit(id: number): void {
+    const u = this.state.units[id];
+    if (!u?.alive) return;
+    this.onTap(u.pos);
+    this.frameUnit(u);
+  }
+
+  protected openLog(): void {
+    const lines = this.battleLog.slice(-300);
+    const close = modal(`
+      <h2>Battle log</h2>
+      <div class="log-list">${lines.length ? lines.map((l) => `<div class="${l.startsWith('  ') ? 'sub' : ''}">${esc(l.trim())}</div>`).join('') : '<div class="hint">Nothing has happened yet.</div>'}</div>
+      <button data-a="close" class="primary">Close</button>`, { close: () => close() });
+    const list = document.querySelector('.modal .log-list');
+    if (list) list.scrollTop = list.scrollHeight;
   }
 }
 
@@ -350,6 +397,7 @@ export abstract class MatchScreen {
 export function copyText(text: string): void {
   const fallback = () => {
     const ta = document.querySelector<HTMLTextAreaElement>('.modal textarea');
+    if (ta) ta.hidden = false;
     ta?.focus();
     ta?.select();
   };

@@ -20,7 +20,7 @@ export function hexToWorld(h: Hex): THREE.Vector3 {
 }
 const topY = (h: number) => BASE_Y + h * LEVEL;
 
-export type HighlightKind = 'move' | 'target' | 'area' | 'danger' | 'facing' | 'select' | 'blocked';
+export type HighlightKind = 'move' | 'target' | 'area' | 'danger' | 'facing' | 'select' | 'blocked' | 'reach' | 'threat' | 'path';
 const HL_COLORS: Record<HighlightKind, number> = {
   move: 0x3aa0ff,
   target: 0xffd23a,
@@ -29,6 +29,9 @@ const HL_COLORS: Record<HighlightKind, number> = {
   facing: 0x7dffb0,
   select: 0xffffff,
   blocked: 0x7c8296,
+  reach: 0xff9a3d,
+  threat: 0xff4d6d,
+  path: 0xffffff,
 };
 
 interface Tween {
@@ -56,6 +59,8 @@ export class BoardView {
   readonly scene = new THREE.Scene();
   readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
   onTap: (hex: Hex | null) => void = () => {};
+  /** The hex under a hovering mouse or a finger that just touched down. */
+  onHover: (hex: Hex | null) => void = () => {};
   /** Animation speed multiplier (spectator fast-forward). */
   speed = 1;
 
@@ -239,7 +244,7 @@ export class BoardView {
 
     const label = document.createElement('div');
     label.className = 'unit-label';
-    label.innerHTML = `<div class="hp"><div class="hp-fill"></div></div><div class="status"></div>`;
+    label.innerHTML = `<div class="status"></div><div class="badge"><span>${UNIT_ICON[u.defId] ?? ''}</span><div class="hp"><div class="hp-fill"></div></div></div>`;
     label.style.setProperty('--team', TEAM_CSS[u.team]);
     this.overlay.appendChild(label);
     this.units.set(u.id, {
@@ -370,7 +375,7 @@ export class BoardView {
       const hl = this.highlights.get(hexKey(h));
       if (!hl) continue;
       (hl.material as THREE.MeshBasicMaterial).color.setHex(HL_COLORS[kind]);
-      (hl.material as THREE.MeshBasicMaterial).opacity = kind === 'area' || kind === 'select' ? 0.65 : kind === 'blocked' ? 0.4 : 0.5;
+      (hl.material as THREE.MeshBasicMaterial).opacity = kind === 'area' || kind === 'select' ? 0.65 : kind === 'blocked' ? 0.4 : kind === 'threat' ? 0.18 : kind === 'reach' ? 0.32 : kind === 'path' ? 0.55 : 0.5;
       hl.visible = true;
     }
   }
@@ -679,6 +684,7 @@ export class BoardView {
     let downAt: { x: number; y: number; t: number } | null = null;
     let dragged = false;
     let pinchDist = 0;
+    let hoverKey = '';
 
     el.addEventListener('pointerdown', (e) => {
       el.setPointerCapture(e.pointerId);
@@ -686,6 +692,7 @@ export class BoardView {
       if (pointers.size === 1) {
         downAt = { x: e.clientX, y: e.clientY, t: performance.now() };
         dragged = false;
+        if (e.pointerType !== 'mouse') this.onHover(this.pick(e.clientX, e.clientY));
       } else if (pointers.size === 2) {
         const [a, b] = [...pointers.values()];
         pinchDist = Math.hypot(a.x - b.x, a.y - b.y);
@@ -694,7 +701,17 @@ export class BoardView {
     });
     el.addEventListener('pointermove', (e) => {
       const prev = pointers.get(e.pointerId);
-      if (!prev) return;
+      if (!prev) {
+        if (e.pointerType === 'mouse' && pointers.size === 0) {
+          const h = this.pick(e.clientX, e.clientY);
+          const key = h ? hexKey(h) : '';
+          if (key !== hoverKey) {
+            hoverKey = key;
+            this.onHover(h);
+          }
+        }
+        return;
+      }
       const cur = { x: e.clientX, y: e.clientY };
       pointers.set(e.pointerId, cur);
       if (pointers.size === 2) {
@@ -800,6 +817,7 @@ export class BoardView {
       if (!v.alive) continue;
       const active = v.id === this.activeUnit;
       v.ring.scale.setScalar(active ? 1 + Math.sin(t * 5) * 0.08 : 1);
+      v.label.classList.toggle('active', active);
       animateIdle(v.model, t + v.id);
       const head = v.root.position.clone();
       head.y += 1.75;
@@ -829,6 +847,17 @@ function animateIdle(model: THREE.Group, t: number): void {
     if (w) w.rotation.z = (name === 'wingL' ? 1 : -1) * (0.3 + Math.sin(t * 9) * 0.45);
   }
 }
+
+/** Species icons, used on the board and across the HUD. */
+export const UNIT_ICON: Record<string, string> = {
+  rhino: '🦏',
+  fox: '🦊',
+  moth: '🦋',
+  porcupine: '🦔',
+  eel: '🐍',
+  lynx: '🐆',
+  octopus: '🐙',
+};
 
 export const STATUS_ICON: Record<string, string> = {
   slow: '🐌',

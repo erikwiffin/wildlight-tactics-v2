@@ -11,7 +11,8 @@ import type { Action, GameEvent, MatchConfig, Role, StrategyId } from '../core/t
 import { AgentError, type TurnRunner } from '../agent/agent';
 import { beaconNames, summarizeEvents, unitName } from '../agent/context';
 import { el, esc, modal } from './dom';
-import { cap, copyText, MatchScreen, mono } from './match';
+import { cap, copyText, MatchScreen } from './match';
+import { icon, showHelp } from './hud';
 import type { PlayExit } from './play';
 import { micButton } from './speech';
 import { buildMatchLog, showExport, type AgentTurnLog } from './matchlog';
@@ -300,7 +301,7 @@ export class OrdersScreen extends MatchScreen {
       const row = el('div', 'order-row');
       const label = el('label', 'order-label');
       label.htmlFor = `order-${u.id}`;
-      label.innerHTML = `<span class="mono t0">${mono(u.defId)}</span><span>${esc(defOf(u).name)}</span><small>${defOf(u).role}</small>`;
+      label.innerHTML = `<span class="mono t0">${icon(u.defId)}</span><span>${esc(defOf(u).name)}</span><small>${defOf(u).role}</small>`;
       const ta = el('textarea', 'order-input');
       ta.id = `order-${u.id}`;
       ta.rows = 2;
@@ -391,6 +392,8 @@ export class OrdersScreen extends MatchScreen {
   protected onTap(h: Hex | null): void {
     const tapped = h ? this.state.units.find((x) => x.alive && x.pos.q === h.q && x.pos.r === h.r) : undefined;
     this.inspect = tapped?.id ?? null;
+    this.view.clearHighlights();
+    this.showThreat(tapped, PLAYER);
     this.renderPanel();
     if (tapped && tapped.team === PLAYER) {
       this.tab = 'orders';
@@ -421,14 +424,16 @@ export class OrdersScreen extends MatchScreen {
     const code = encodeReplay(this.replay());
     const close = modal(`
       <h2>Menu</h2>
-      <div class="hint">Seed <b>${esc(this.state.config.seed)}</b> · ${this.log.length} actions · vs ${esc(cap(this.enemy))} AI · your units are played by Claude from your orders</div>
-      <textarea readonly>${code}</textarea>
+      <div class="hint">Seed <b>${esc(this.state.config.seed)}</b> · vs ${esc(cap(this.enemy))} AI · Claude plays your units from your orders</div>
+      <button data-a="close" class="primary">Close</button>
       <div class="btns">
+        <button data-a="help">How to play</button>
+        <button data-a="quit">Save and quit</button>
         <button data-a="copy">Copy replay code</button>
         <button data-a="export">Export match log</button>
-        <button data-a="quit">Save and quit</button>
       </div>
-      <button data-a="close" class="primary">Close</button>`, {
+      <textarea readonly hidden>${code}</textarea>`, {
+      help: () => { close(); showHelp(this.state); },
       copy: () => copyText(code),
       export: () => { close(); showExport(this.matchLog()); },
       quit: () => { close(); this.save(); this.onExit({ to: 'setup' }); },
@@ -448,7 +453,7 @@ export class OrdersScreen extends MatchScreen {
       <h2>${title}</h2>
       <div>${this.state.score[0]} – ${this.state.score[1]}</div>
       <div class="hint">${this.savedId ? 'Saved to your match library.' : 'This browser blocks storage, so copy the code to keep this match.'}</div>
-      <textarea readonly>${code}</textarea>
+      <textarea readonly hidden>${code}</textarea>
       <div class="btns">
         <button data-a="copy">Copy replay code</button>
         <button data-a="watch">Watch replay</button>

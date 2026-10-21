@@ -217,6 +217,12 @@ function reachGraph(state: GameState, u: Unit): Map<string, ReachNode> {
   return best;
 }
 
+/** The route a move to `dest` would take (empty if unreachable). For UI previews. */
+export function movePath(state: GameState, u: Unit, dest: Hex): Hex[] {
+  const nodes = reachGraph(state, u);
+  return nodes.has(hexKey(dest)) ? pathTo(nodes, u.pos, dest) : [];
+}
+
 function pathTo(nodes: Map<string, ReachNode>, start: Hex, dest: Hex): Hex[] {
   const path: Hex[] = [];
   let k: string | null = hexKey(dest);
